@@ -14,8 +14,6 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-use Data::Dumper;
-
 $VERSION = '0.1';
 %IRSSI = (
 	'authors'     => 'Wipe',
@@ -100,7 +98,6 @@ sub run_threads()
 				$boardName =~ s!^[\t\ ]*!!;
 				$boardName =~ s![\t\ ]*$!!;
 				$boardName = decode_entities( $boardName );
-				Irssi::print( "$boardName :!" );
 
 				next if( !$boardId || !$boardName );
 				$smf{$id}{boards_names}{$boardId} = $boardName;
@@ -197,8 +194,8 @@ sub smf_get($)
 	my $xml = XMLin( $res->content );
 	if( !exists($xml->{article}) )
 	{
-	    my %result = ( 'error' => 'missing article' );
-	    return( \%result );
+		my %result = ( 'error' => 'missing article' );
+		return( \%result );
 	}
 
 	my %result;
@@ -226,35 +223,24 @@ sub smf_save
 		}
 	}
 	if( -w $file || ! -x $file )
-	{
-		store( \%save, $file );
-#		Irssi::print( "Saved $file" );
-	}
-#	else
-#		{ Irssi::print( "not writable $file" ); }
+		{ store( \%save, $file ); }
 }
 
 sub smf_load
 {
 	my $file = Irssi::get_irssi_dir() . '/smf.dat';
 	if( -r $file )
-	{
-		%smf = %{retrieve( $file )};
-#		Irssi::print( "Loaded $file" );
-#		print Dumper( %smf );
-	}
-#	else
-#		{ Irssi::print( "not readable $file" ); }
+		{ %smf = %{retrieve( $file )}; }
 }
 
 sub cmd_smf
 {
-    my( $args, $server, $window ) = @_;
+	my( $args, $server, $window ) = @_;
 
-    $args =~ s!^[\t\ ]*!!;
-    $args =~ s![\t\ ]*$!!;
+	$args =~ s!^[\t\ ]*!!;
+	$args =~ s![\t\ ]*$!!;
 
-    Irssi::command_runsub( 'smf',$args, $server, $window );
+	Irssi::command_runsub( 'smf',$args, $server, $window );
 }
 
 sub cmd_smf_add
@@ -549,6 +535,7 @@ sub cmd_smf_stop
 
 sub cmd_smf_dump
 {
+	use Data::Dumper;
 	Irssi::print( Dumper( %smf ));
 }
 Irssi::command_bind( 'smf dump', \&cmd_smf_dump );
