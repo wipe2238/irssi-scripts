@@ -1,10 +1,14 @@
+###
 #
+# SimpleMachines Forum monitor
+#
+# Wipe/Rotators
+#
+###
 
 use strict;
 use warnings;
 use vars qw($VERSION %IRSSI);
-
-use threads;
 
 use Irssi;
 use Irssi::Irc;
@@ -14,146 +18,91 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-$VERSION = '0.1';
+$VERSION = '0.2';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'smf',
 	'description' => 'SimpleMachines Forum monitor',
 	'url'         => 'https://github.com/wipe2238/irssi-scripts/',
 	'commands'    => 'smf',
-	'modules'     => 'threads HTML::Entities LWP Storable XML::Simple',
+	'modules'     => 'HTML::Entities LWP Storable XML::Simple (Data::Dumper)',
 	'license'     => 'GPL',
 );
 
-my $timer;
+###
+#
+# v0.2
+#	reverted to non-threading model
+#	more informations about what script is doing
+#	save table reorganization
+#
+# v0.1
+#	initial version
+#
+###
 
+use vars qw($have_dumper);
+$have_dumper = 0;
+eval "use Data::Dumper;";
+$have_dumper = 1 if not($@);
+
+my $timer;
 my %smf;
 
-sub run_threads()
+sub board_name($$)
+{
+	my( $id, $board ) = @_;
+
+	return( $board ) if( !exists($smf{$id}{board}{$board}) );
+	if( exists($smf{$id}{board}{$board}{name}) && $smf{$id}{board}{$board}{name} ne "" )
+		{ return( sprintf( "%d (%s)", $board, $smf{$id}{board}{$board}{name} )); }
+	return( $board );
+}
+
+sub smf_log($;@)
+{
+	my( $format, @args ) = @_;
+	my $text = sprintf( $format, @args );
+	print( CLIENTCRAP sprintf( "-\x02%s\x02- %s", $IRSSI{name}, $text ));
+}
+
+sub smf_info($$;@)
+{
+	my( $id, $format, @args ) = @_;
+	my $text = sprintf( $format, @args );
+	print( CLIENTCRAP sprintf( "-\x02%s\x02:\x02%s\x02- %s", $IRSSI{name}, $id, $text ));
+}
+
+sub smf_check()
 {
 	foreach my $id ( sort { $a cmp $b } keys( %smf ))
 	{
-		next if( defined($smf{$id}{stopped}) );
-		next if( !defined($smf{$id}{url}) );
-		next if( !defined($smf{$id}{boards}) || !scalar(keys(%{$smf{$id}{boards}})) );
+		next if( exists($smf{$id}{stopped}) );
+
+		if( !exists($smf{$id}{url}) || !defined($smf{$id}{url}) )
+		{
+			smf_info( $id, "URL not defined, stopping" );
+			$smf{$id}{stopped} = 1;
+			next;
+		}
+
+		if( !exists($smf{$id}{board}) )
+		{
+			smf_info( $id, "No boards added, stopping" );
+			$smf{$id}{stopped} = 1;
+			next;
+		}
 
 		if( !defined($smf{$id}{delay}) || $smf{$id}{delay} <= 0 )
-			{ $smf{$id}{delay} = 5; }
-
-		if( !defined($smf{$id}{_thread}) ) # start thread
 		{
-			my $func = 'smf_get';
-
-			next if( time < $smf{$id}{checked} + ($smf{$id}{delay}*60) );
-
-			if( !defined( UNIVERSAL::can( __PACKAGE__, $func )))
-			{
-				Irssi::print( "Error: invalid thread function<$func>" );
-				next;
-			}
-
-			$smf{$id}{checked} = time;
-			my $thread;
-			{
-				no warnings;
-#				Irssi::print( "starting thread [$id]" );
-				$thread = threads->new( $func, %{ $smf{$id} } );
-			}
-			if( !defined($thread) )
-			{
-				Irssi::print( "Error: thread not created [$id]" );
-				next;
-			}
-			smf_save();
-			$smf{$id}{_thread} = $thread;
+			smf_info( $id, "Delay not set, setting to default (5 minutes)" );
+			$smf{$id}{delay} = 5;
 		}
-#		elsif( $smf{$id}{_thread}->is_running() )
-#		{
-#			Irssi::print( "still working [$id]" );
-#		}
-		elsif( $smf{$id}{_thread}->is_joinable() ) # end thread
-		{
-#			Irssi::print( "joining thread [$id]" );
-			my $result = $smf{$id}{_thread}->join();
-			delete($smf{$id}{_thread});
 
-			if( !defined($result) )
-			{
-				Irssi::print( "Error: no results [$id]" );
-				next;
-			}
-			if( defined( $result->{error} ))
-			{
-				Irssi::print( "Error: ".$result->{error}." [$id]" );
-				next;
-			}
-			next if( !scalar(keys(%{$result})) );
-			foreach my $thid ( sort{$a <=> $b} keys( %{$result} ))
-			{
-				# TODO: strip html (Ashes of Phoenix)
-
-				# always update board name
-				my $boardId = $result->{$thid}{board}{id};
-				my $boardName = $result->{$thid}{board}{name};
-				$boardName =~ s!^[\t\ ]*!!;
-				$boardName =~ s![\t\ ]*$!!;
-				$boardName = decode_entities( $boardName );
-
-				next if( !$boardId || !$boardName );
-				$smf{$id}{boards_names}{$boardId} = $boardName;
-
-				# skip known threads
-				next if( defined($smf{$id}{known}{$thid}) );
-				$smf{$id}{known}{$thid} = $boardId;
-
-				my $subject = $result->{$thid}{subject};
-				$subject =~ s!^[\t\ ]*!!;
-				$subject =~ s![\t\ ]*$!!;
-				$subject = decode_entities( $subject );
-
-				my $poster = $result->{$thid}{poster}{name};
-				$poster =~ s!^[\t\ ]*!!;
-				$poster =~ s![\t\ ]*$!!;
-				$poster = decode_entities( $poster );
-
-				my $link = $result->{$thid}{link};
-				$link =~ s!^[\t\ ]*!!;
-				$link =~ s![\t\ ]*$!!;
-
-				next if( !$subject || !$poster || !$link );
-
-				foreach my $network( sort{$a cmp $b} keys( $smf{$id}{boards}{$boardId}) )
-				{
-					my @msg;
-					my $server = Irssi::server_find_chatnet( $network );
-					next if( !defined($server) );
-					foreach my $channel ( $server->channels() )
-					{
-						my $chaname = lc($channel->{name});
-						next if( !defined( $smf{$id}{boards}{$boardId}{$network}{$chaname}) );
-						my $prefix = $smf{$id}{boards}{$boardId}{$network}{$chaname};
-						my $text = sprintf( "\x02[\x02%s%s\x02]\x02 \"%s\" by %s \x02::\x02 %s",
-							$prefix ne "" ? "$prefix, " : "",
-							$boardName,
-							$subject,
-							$poster,
-							$link
-						);
-						push( @msg, "msg $chaname $text" );
-					}
-					foreach my $msg ( @msg )
-					{
-						$server->command( $msg );
-#						Irssi::print( $msg );
-					}
-				}
-			}
-			smf_save();
-		}
-#		else
-#		{
-#			Irssi::print( "nothing to do" );
-#		}
+		next if( time < $smf{$id}{checked} + ($smf{$id}{delay}*60) );
+		smf_get( $id );
+		$smf{$id}{checked} = time;
+		smf_save();
 	}
 }
 
@@ -164,66 +113,153 @@ sub smf_get($)
 	use strict;
 	use warnings;
 
-	my( %cfg ) = @_;
+	my( $id ) = @_;
 
-	my $cfg_url = $cfg{url};
+	return if( !exists($smf{$id}{url}) );
+
+	my $cfg_url = $smf{$id}{url};
 	$cfg_url =~ s![\/]*$!!;
-	my @cfg_boards = sort{$a <=> $b} keys( $cfg{boards} );
-	if( !scalar( @cfg_boards ))
-	{
-		my %result = ( 'error' => 'no boards defined' );
-		return( \%result );
-	}
 
-	my $url = sprintf( '%s/?action=.xml&type=smf&sa=news&limit=9999&boards=%s',
-		$cfg_url, join( ',', @cfg_boards ));
+	return if( !scalar(keys( $smf{$id}{board} )));
+
+	my $url = sprintf( '%s/?action=.xml&type=smf&sa=news&boards=%s%s',
+		$cfg_url,
+		join( ',', keys($smf{$id}{board} )),
+		$smf{$id}{limit} > 0 ? sprintf( "&limit=%d", $smf{$id}{limit} ) : ""
+	);
+
+#	smf_info( $id, "GET %s", $url );
 
 	my $ua = LWP::UserAgent->new;
-	$ua->agent( "irssi-smf/$VERSION" );
+	$ua->agent( sprintf( "irssi::%s/%s", $IRSSI{name}, $VERSION ));
 
-	my $req = HTTP::Request->new( GET => $url );
-	my $res = $ua->request( $req );
+	my $request = HTTP::Request->new( GET => $url );
+	my $response = $ua->request( $request );
 
-	if( !$res->is_success )
+	if( !$response->is_success )
 	{
-		my $err = sprintf( "HTML error : %d %s", $res->code, $res->message );
-		my %result = ( 'error' => $err );
-		return( \%result );
+		smf_info( $id, "HTML error \x02%d\x02 : \x02%s\x02",
+			$response->code, $response->message );
+		return;
 	}
 
-	my $xml = XMLin( $res->content );
+	my $xml = XMLin( $response->content );
 	if( !exists($xml->{article}) )
 	{
-		my %result = ( 'error' => 'missing article' );
-		return( \%result );
+		smf_info( $id, "INVALID XML : missing XML->{article}" );
+		return;
 	}
 
-	my %result;
-
-	foreach my $id ( sort{ $a <=> $b } keys( $xml->{article} ))
+	my $skipped = 0;
+	foreach my $thread ( sort{ $a <=> $b } keys( $xml->{article} ))
 	{
-		next if( defined($cfg{known}{$id}) );
-		next if( defined($result{$id}) );
+		my $board = $xml->{article}{$thread}{board}{id};
+		my $boardName = $xml->{article}{$thread}{board}{name};
+		$boardName =~ s!^[\t\ ]*!!;
+		$boardName =~ s![\t\ ]*$!!;
+		$boardName = decode_entities( $boardName );
 
-		$result{$id} = $xml->{article}{$id};
+		next if( !$board || !$boardName );
+
+		# always update board name
+		if( ($smf{$id}{board}{$board}{name} || "") ne $boardName )
+		{
+			smf_info( $id, "Board \x02%s\x02 name changed to \x02%s\x02",
+				board_name( $id, $board ), $boardName );
+			$smf{$id}{board}{$board}{name} = $boardName;
+			smf_save();
+		}
+
+		my $subject = $xml->{article}{$thread}{subject};
+		$subject =~ s!^[\t\ ]*!!;
+		$subject =~ s![\t\ ]*$!!;
+		$subject = decode_entities( $subject );
+
+		my $poster = $xml->{article}{$thread}{poster}{name};
+		$poster =~ s!^[\t\ ]*!!;
+		$poster =~ s![\t\ ]*$!!;
+		$poster = decode_entities( $poster );
+
+		my $link = $xml->{article}{$thread}{link};
+		$link =~ s!^[\t\ ]*!!;
+		$link =~ s![\t\ ]*$!!;
+
+		next if( !$subject || !$poster || !$link );
+
+		# what's going on here?
+		if( !($link =~ /^$smf{$id}{url}/) )
+		{
+			smf_log( $id, "Invalid link : \x02%s\x02 vs \x02%s\x02",
+				$link, $smf{$id}{url} );
+			next;
+		}
+
+		# skip known threads
+		if( exists($smf{$id}{board}{$board}{thread}{$thread}) )
+		{
+			$smf{$id}{board}{$board}{thread}{$thread} = 1;
+			next;
+		}
+
+		next if( $subject =~ /^MOVED\:/ );
+
+		foreach my $network( sort{$a cmp $b} keys( $smf{$id}{board}{$board}{irc}) )
+		{
+			my @msg;
+			my $server = Irssi::server_find_chatnet( $network );
+			next if( !defined($server) );
+			foreach my $chan ( $server->channels() )
+			{
+				my $channel = lc($chan->{name});
+				next if( !exists( $smf{$id}{board}{$board}{irc}{$network}{$channel}) );
+				my $prefix = $smf{$id}{board}{$board}{irc}{$network}{$channel} || "";
+				my $text = sprintf( "\x02[\x02%s%s\x02]\x02 \"%s\" by %s \x02:\x02 %s",
+					$prefix ne "" ? "$prefix \x02:\x02 " : "",
+					$boardName, $subject, $poster, $link
+				);
+				push( @msg, "msg $channel $text" );
+			}
+
+			# board checked for a first time
+			if( exists($smf{$id}{board}{$board}{first_time}) )
+				{ $skipped += scalar(@msg); }
+
+			# already known board
+			else
+			{
+				foreach my $msg ( @msg )
+				{
+					$server->command( $msg );
+					smf_info( $id, "%s", $msg );
+				}
+			}
+		}
+		$smf{$id}{board}{$board}{thread}{$thread} = $board;
+	}
+	if( $skipped > 0 )
+	{
+		smf_info( $id, "Skipped %d message%s",
+			$skipped, $skipped != 1 ? "s" : "" );
 	}
 
-	return( \%result );
+	# clear list of ignored boards
+	foreach my $board ( sort{ $a <=> $b} keys( $smf{$id}{board} ))
+	{
+		if( exists($smf{$id}{board}{$board}{first_time}) )
+		{
+			smf_info( $id, "Board \x02%s\x02 no longer ignored",
+				board_name( $id, $board ));
+			delete($smf{$id}{board}{$board}{first_time});
+		}
+	}
+	smf_save();
 }
 
 sub smf_save
 {
 	my $file = Irssi::get_irssi_dir() . '/smf.dat';
-	my %save = %smf;
-	foreach my $id ( keys( %save ))
-	{
-		foreach my $key ( '_thread' )
-		{
-			delete( $save{$id}{$key} );
-		}
-	}
 	if( -w $file || ! -x $file )
-		{ store( \%save, $file ); }
+		{ store( \%smf, $file ); }
 }
 
 sub smf_load
@@ -251,32 +287,33 @@ sub cmd_smf_add
 
 	if( !defined($id) || $id eq "" )
 	{
-		Irssi::print( "Error: missing identifier" );
+		smf_log( "Error: missing identifier" );
 		return;
 	}
 
 	if( !defined($url) || $url eq "" )
 	{
-		Irssi::print( "Error: missing url" );
+		smf_log( "Error: missing url" );
 		return;
 	}
 
 	if( !($url =~ /^http\:\/\// || $url =~ /^https\:\/\//) )
 	{
-		Irssi::print( "Error: invalid url<$url>" );
+		smf_log( "Error: invalid url [%s]", $url );
 		return;
 	}
 
 	my $new = {
 		'stopped' => 1,
-		'url' => $url,
-		'delay' => 5,
+		'url'     => $url,
+		'delay'   => 5,
+		'limit'   => 10,
 		'checked' => 0
 	};
 
 	$smf{$id} = $new;
 
-	Irssi::print( "SMF : Added identifier<$id> with url<$url>" );
+	smf_log( "Added forum \x02%s\x02 with address \x02%s\x02", $id, $url );
 	smf_save();
 }
 
@@ -286,16 +323,14 @@ sub cmd_smf_del
 
 	if( !defined($smf{$args}) )
 	{
-		Irssi::print( "Error: identifier<$args> does not exists" );
+		smf_log( "Error: forum \x02%s\x02 does not exists", $args );
 		return;
 	}
 	my $url = $smf{$args}{url} || '???';
 
-	if( defined($smf{$args}{_thread}) )
-	    { $smf{$args}{_thread}->join(); }
 	delete( $smf{$args} );
 
-	Irssi::print( "SMF : Deleted identifier<$args> with url<$url>" );
+	smf_log( "Removed forum \x02%s\x02 with url \x02%s\x02", $args, $url );
 	smf_save();
 }
 
@@ -307,18 +342,18 @@ sub cmd_smf_edit
 
 	if( !defined($id) )
 	{
-		Irssi::print( "Error: missing identifier" );
+		smf_log( "Error: missing forum identifier" );
 		return;
 	}
 	elsif( !defined($smf{$id}) )
 	{
-		Irssi::print( "Error: identifier<$id> does not exists" );
+		smf_log( "Error: forum \x02%s\x02 does not exists", $id );
 		return;
 	}
 
 	if( !defined($action) )
 	{
-		Irssi::print( "Error: missing property" );
+		smf_log( "Error: missing property" );
 		return;
 	}
 
@@ -332,23 +367,36 @@ sub cmd_smf_edit
 		elsif( !defined($vals[0]) )
 		    { $error = "missing board id"; }
 		elsif( !($vals[0] =~ /^[0-9]+$/) )
-		    { $error = "board id must be a number ($vals[0])"; }
+		    { $error = "board id must be a number"; }
 		elsif( !defined(Irssi::chatnet_find($vals[1])) )
-		    { $error = "unknown chatnet<$vals[1]>"; }
+		    { $error = "unknown chatnet \x02$vals[1]\x02"; }
 		elsif( !($vals[2] =~ /^\#/) )
-		    { $error = "invalid channel<$vals[2]>"; }
+		    { $error = "invalid channel \x02$vals[2]\x02"; }
 		if( defined($error) )
 		{
-		    Irssi::print( "Error: $action : $error" );
+		    smf_log( "Error: %s : %s", $action, $error );
 		    return;
 		}
-		my $chatnet = Irssi::chatnet_find( $vals[1] );
-		my $value = "";
+
+		my $prefix = "";
 		if( scalar(@vals) >= 4 )
-		    { $value = join( ' ', @vals[3..scalar(@vals)-1] ); }
+		    { $prefix = join( ' ', @vals[3..scalar(@vals)-1] ); }
 		@vals = map{ lc } @vals;
-		$smf{$id}{boards}{$vals[0]}{$vals[1]}{$vals[2]} = $value;
-		smf_save();
+		my( $board, $network, $channel ) = @vals;
+
+		smf_info( $id, "Added board \x02%s\x02 to network \x02%s\x02 and channel \x02%s\x02%s",
+			board_name( $id, $board ), $network, $channel,
+			$prefix ne "" ? " (prefix: \x02$prefix\x02)" : ""
+		);
+
+		# don't mark board as unchecked if it's already added
+		if( !exists($smf{$id}{board}{$board}) )
+		{
+			smf_info( $id, "Marking board \x02%s\x02 as ignored (temporary)",
+				board_name( $id, $board ));
+			$smf{$id}{board}{$board}{first_time} = 1;
+		}
+		$smf{$id}{board}{$board}{irc}{$network}{$channel} = $prefix;
 	}
 	elsif( $action eq "delboard" )
 	{
@@ -360,48 +408,54 @@ sub cmd_smf_edit
 		    { $error = "missing board id"; }
 		elsif( !($vals[0] =~ /^[0-9]+$/) )
 		    { $error = "board id must be a number ($vals[0])" }
-		elsif( !defined($smf{$id}{boards}{$vals[0]}) )
-		    { $error = "unknown board<$vals[0]>"; }
+		elsif( !defined($smf{$id}{board}{$vals[0]}) )
+		    { $error = "unknown board [$vals[0]]"; }
 		elsif( scalar(@vals) > 1 && scalar(@vals) < 3 )
 		    { $error = "missing arguments (for channel removing)"; }
-		elsif( scalar(@vals) >= 3 && !defined($smf{$id}{boards}{$vals[0]}{$vals[1]}) )
-		    { $error = "invalid chatnet<$vals[1]>"; }
-		elsif( scalar(@vals) >= 3 && !defined($smf{$id}{boards}{$vals[0]}{$vals[1]}{$vals[2]}) )
-		    { $error = "invalid channel<$vals[2]>"; }
+		elsif( scalar(@vals) >= 3 && !exists($smf{$id}{board}{$vals[0]}{irc}{$vals[1]}) )
+		    { $error = "invalid chatnet [$vals[1]]"; }
+		elsif( scalar(@vals) >= 3 && !exists($smf{$id}{board}{$vals[0]}{irc}{$vals[1]}{$vals[2]}) )
+		    { $error = "invalid channel [$vals[2]]"; }
 
 		if( defined($error) )
 		{
-			Irssi::print( "Error: $action : $error" );
+			smf_log( "Error: %s : %s", $action, $error );
 			return;
 		}
+
+		my( $board, $network, $channel ) = @vals;
 		if( scalar(@vals) >= 3 )
 		{
-			delete($smf{$id}{boards}{$vals[0]}{$vals[1]}{$vals[2]});
-			
-			if( !scalar(keys($smf{$id}{boards}{$vals[0]}{$vals[1]})) )
-				{ delete($smf{$id}{boards}{$vals[0]}{$vals[1]}); }
-			if( !scalar(keys($smf{$id}{boards}{$vals[0]})) )
+
+			smf_info( $id, "Removed channel \x02%s\x02 from network \x02%s\x02 for board \x02%s\x02",
+				$channel, $network, board_name( $id, $board ));
+
+			delete($smf{$id}{board}{$board}{irc}{$network}{$channel});
+
+			if( !scalar(keys($smf{$id}{board}{$board}{irc}{$network})) )
 			{
-				delete($smf{$id}{boards}{$vals[0]});
-				delete($smf{$id}{boards_names}{$vals[0]});
+				smf_info( $id, "Removed network \x02%s\x02 for board \x02%s\x02",
+					$network, board_name( $id, $board ));
+				delete($smf{$id}{board}{$board}{irc}{$network});
+			}
+
+			if( !scalar(keys($smf{$id}{board}{$board}{irc})) )
+			{
+				smf_log( $id, "No channels defined for board \x02%s\x",
+					board_name( $id, $board ));
+				delete($smf{$id}{board}{$board}{irc});
 			}
 		}
 		else
 		{
-			delete($smf{$id}{boards}{$vals[0]});
-			delete($smf{$id}{boards_names}{$vals[0]});
+			smf_info( $id, "Removed board \x02%s\x02", board_name( $id, $board ));
+			delete($smf{$id}{board}{$board});
 		}
 
-		foreach my $thid ( keys( $smf{$id}{known} ))
+		if( !scalar(keys($smf{$id}{board})) )
 		{
-			if( $smf{$id}{known}{$thid} == $vals[0] )
-				{ delete( $smf{$id}{known}{$thid} ); }
-		}
-
-		if( !scalar(keys($smf{$id}{boards})) )
-		{
-			delete($smf{$id}{boards});
-			delete($smf{$id}{boards_names});
+			smf_info( $id, "No more boards left" );
+			delete($smf{$id}{board});
 		}
 	}
 	elsif( $action eq "delay" )
@@ -415,20 +469,39 @@ sub cmd_smf_edit
 		    { $error = "delay time must be a number ($vals[0])" }
 		if( defined($error) )
 		{
-			Irssi::print( "Error: $action : $error" );
+			smf_log( "Error: %s : %s", $action, $error );
 			return;
 		}
+
+		smf_info( $id, "Delay set to \x02%d\x02 minute%s",
+			$vals[0], $vals[0] != 1 ? "s" : "" );
 		$smf{$id}{delay} = int($vals[0]);
 	}
-
-	# debug :P
-	elsif( $action eq '--clear-known' )
+	elsif( $action eq "limit" )
 	{
-		delete( $smf{$id}{known} );
+		my $error = undef;
+		if( scalar(@vals) < 1 )
+			{ $error = "missing arguments"; }
+		elsif( !defined($vals[0]) )
+			{ $error = "missing threads limit"; }
+		elsif( !($vals[0] =~ /^[0-9]+$/) )
+			{ $error = "threads limit must be a number ($vals[0])" }
+		elsif( int($vals[0]) < 0 )
+			{ $error = "threads limit must be >= 0"; }
+		if( defined($error) )
+		{
+			smf_log( "Error: %s : %s", $action, $error );
+			return;
+		}
+
+		smf_info( $id, "Threads limit set to \x02%d\x02%s",
+			$vals[0], $vals[0] == 0 ? " (will use default forum values)" :"" );
+		$smf{$id}{limit} = int($vals[0]);
 	}
+
 	else
 	{
-		Irssi::print( "Error: unknown action<$action>" );
+		smf_log( "Error: unknown action [%s]", $action );
 		return;
 	}
 	smf_save();
@@ -441,37 +514,40 @@ sub cmd_smf_show
 	sub show
 	{
 		my $id = shift;
-		Irssi::print( "[$id]" );
 		if( defined($smf{$id}{stopped}) )
-			{ Irssi::print( "  STOPPED" ); }
-		Irssi::print( "  URL:     ".$smf{$id}{url} );
-		Irssi::print( sprintf( "  Delay:   %d minute%s",
-			$smf{$id}{delay}, $smf{$id}{delay} != 1 ? "s" : "" ));
-		if( $smf{$id}{checked} > 0 )
+			{ smf_info( $id, "STOPPED" ); }
+		smf_info( $id, "URL:     ".$smf{$id}{url} );
+		smf_info( $id, "Delay:   %d minute%s",
+			$smf{$id}{delay}, $smf{$id}{delay} != 1 ? "s" : "" );
+		if( $smf{$id}{limit} > 0 )
+		{
+			smf_info( $id, "Limit:   %d thread%s",
+				$smf{$id}{limit}, $smf{$id}{limit} != 1 ? "s" : "" );
+		}
+		if( exists($smf{$id}{checked}) && $smf{$id}{checked} > 0 )
 		{
 			my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{checked});
-			Irssi::print( sprintf( "  Checked: %d.%02d.%d, %02d:%02d:%02d",
-				$mday, $mon+1, $year+1900, $hour, $min, $sec ));
+			smf_info( $id, "Last check: %d.%02d.%d, %02d:%02d:%02d",
+				$mday, $mon+1, $year+1900, $hour, $min, $sec );
+			($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{checked}+($smf{$id}{delay}*60));
+			smf_info( $id, "Next check: %d.%02d.%d, %02d:%02d:%02d",
+				$mday, $mon+1, $year+1900, $hour, $min, $sec );
 		}
+		return if( !exists($smf{$id}{board}) );
+
+		foreach my $board ( sort{$a <=> $b} keys( $smf{$id}{board} ))
 		{
-			foreach my $board ( sort{$a <=> $b} keys( %{$smf{$id}{boards}} ))
+			smf_info( $id, "Board %s:", board_name( $id, $board ));
+			foreach my $network ( sort{$a cmp $b} keys( %{ $smf{$id}{board}{$board}{irc} }))
 			{
-				Irssi::print( sprintf( "  Board %s%s:",
-					$board, defined($smf{$id}{boards_names}{$board})
-						? " ($smf{$id}{boards_names}{$board})"
-						: ""
-				));
-				foreach my $network ( sort{$a cmp $b} keys( %{$smf{$id}{boards}{$board}} ))
+				my @channels;
+				foreach my $channel ( sort{$a cmp $b} keys( $smf{$id}{board}{$board}{irc}{$network} ))
 				{
-					next if( $network eq "_name" );
-					my @channels;
-					foreach my $channel ( sort{$a cmp $b} keys( %{$smf{$id}{boards}{$board}{$network}} ))
-					{
-						my $prefix = $smf{$id}{boards}{$board}{$network}{$channel};
-						push( @channels, $prefix eq "" ? $channel : "$channel (prefix: $prefix)" );
-					}
-					Irssi::print( "    $network : ".join( ", ", @channels ));
+					my $prefix = $smf{$id}{board}{$board}{irc}{$network}{$channel};
+					push( @channels, $prefix eq "" ? $channel : "$channel (prefix: $prefix)" );
 				}
+				smf_info( $id, "  %s : %s",
+					$network, join( ", ", @channels ));
 			}
 		}
 	}
@@ -488,7 +564,7 @@ sub cmd_smf_show
 		my( $id ) = split( /\ /, $args );
 		if( !defined($smf{$id}) )
 		{
-			Irssi::print( "Error: unknown identifier<$id>" );
+			smf_log( "Error: unknown forum \x02%s\x02", $id );
 			return;
 		}
 		show( $id );
@@ -501,15 +577,16 @@ sub cmd_smf_start
 
 	if( !defined($args) || $args eq "" )
 	{
-		Irssi::print( "Error: missing identifier" );
+		smf_log( "Error: missing forum identifier" );
 		return;
 	}
 	elsif( !defined($smf{$args}) )
 	{
-		Irssi::print( "Error: identifier<$args> does not exists" );
+		smf_log( "Error: forum \x02%s\x02 does not exists", $args );
 		return;
 	}
 
+	smf_info( $args, "Started" );
 	delete( $smf{$args}{stopped} );
 	smf_save();
 }
@@ -520,25 +597,36 @@ sub cmd_smf_stop
 
 	if( !defined($args) || $args eq "" )
 	{
-		Irssi::print( "Error: missing identifier" );
+		smf_log( "Error: missing forum identifier" );
 		return;
 	}
 	elsif( !defined($smf{$args}) )
 	{
-		Irssi::print( "Error: identifier<$args> does not exists" );
+		smf_log( "Error: forum \x02%s\x02 does not exists", $args );
 		return;
 	}
 
+	smf_info( $args, "Stopped" );
 	$smf{$args}{stopped} = 1;
+	smf_save();
+}
+
+sub pre_unload() # used by scriptassist
+{
+	smf_log( "Saving..." );
 	smf_save();
 }
 
 sub cmd_smf_dump
 {
-	use Data::Dumper;
-	Irssi::print( Dumper( %smf ));
+	my( $id ) = @_;
+	if( !defined($id) || $id eq "" )
+		{ print CLIENTCRAP Dumper( %smf ); }
+	else
+		{ print CLIENTCRAP Dumper( $smf{$id} ); }
 }
-Irssi::command_bind( 'smf dump', \&cmd_smf_dump );
+if( $have_dumper )
+	{ Irssi::command_bind( 'smf dump', \&cmd_smf_dump ); }
 
 Irssi::command_bind( 'smf', \&cmd_smf );
 Irssi::command_bind( 'smf add', \&cmd_smf_add );
@@ -551,6 +639,6 @@ Irssi::command_bind( 'smf stop', \&cmd_smf_stop );
 Irssi::command_bind( 'smf save', \&smf_save );
 
 smf_load();
-$timer = Irssi::timeout_add( 1000, 'run_threads', undef );
+$timer = Irssi::timeout_add( 1000*15, 'smf_check', undef );
 
-Irssi::print( "smf loaded" );
+#smf_log( "Loaded" );
