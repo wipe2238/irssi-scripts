@@ -240,13 +240,14 @@ sub smf_get($)
 	$ua->agent( sprintf( "irssi::%s/%s", $IRSSI{name}, $VERSION ));
 
 	my $request = HTTP::Request->new( GET => $url );
-	my $response = $ua->request( $request );
 
 	if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_get' ))
 	{
 		$url =~ s!^$smf{$id}{url}!!;
 		smf_info( $id, "GET \$URL/%s", $url );
 	}
+
+	my $response = $ua->request( $request );
 
 	if( !$response->is_success )
 	{
@@ -410,17 +411,18 @@ sub smf_get($)
 
 sub smf_save
 {
-	my $file = Irssi::get_irssi_dir() . '/smf.dat';
+	my $file = Irssi::get_irssi_dir() . '/' . $IRSSI{name} . '.dat';
 	if( -w $file || ! -x $file )
 		{ store( \%smf, $file ); }
 }
 
 sub smf_load
 {
-	my $file = Irssi::get_irssi_dir() . '/smf.dat';
+	my $file = Irssi::get_irssi_dir() . '/' . $IRSSI{name} . '.dat';
 	if( -r $file )
 		{ %smf = %{retrieve( $file )}; }
 
+	# v0.2 compatibility
 	foreach my $id ( sort{$a cmp $b} keys( %smf ))
 	{
 		my $update = 0;
@@ -450,7 +452,7 @@ sub smf_load
 				$update = 1;
 			}
 		}
-		smf_info( $id, "Updated configuration" ) if( $update );
+		smf_info( $id, "Updated configuration to v0.3 version" ) if( $update );
 	}
 }
 
