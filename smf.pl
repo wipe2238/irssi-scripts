@@ -18,7 +18,7 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-$VERSION = '0.2';
+$VERSION = '0.3';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'smf',
@@ -30,6 +30,100 @@ $VERSION = '0.2';
 );
 
 ###
+#
+# COMMANDS
+#
+# /smf add [forum_id] [forum_url]
+#	Adds forum with given url.
+#	NOTES:
+#		- As some forums can be accessed via various addresses (for example
+#		  http://SITE.com/forum/ and http://forum.SITE.com/ may point to same forum),
+#		  make sure that you give the same url that forums returns in its feed.
+#		  To check what address is returned, simply add "?action=.xml" to forum address
+#		  and see what's inside <link> tags.
+#		  Example: http://www.simplemachines.org/community/?action=.xml
+#		- Each newly added forum is stopped by default.
+#
+# /smf del [forum_id]
+#	Removes previously added forum.
+#
+# /smf start [forum_id]
+#	Starts checking forum. If no boards has been added, it will be forced to stop.
+#
+# /smf stop [forum_id]
+#	Stops checking forum.
+#
+# /smf edit [forum_id] [action] <action_arguments>
+#
+#	ACTIONS:
+#
+#	addboard [board_id] [network] [channel] <prefix>
+#		Adds a new board to watch. Output will be sent to the channel you specify.
+#		Network argument must be already existing chatnet in your settings.
+#		If prefix is not given, script will send message in following format:
+#			[BoardName] "ThreadName" by Author : http://Link/To/Topic
+#		Otherwise, following format is used:
+#			[Prefix : BoardName] "ThreadName" by Author : http://Link/To/Topic
+#		NOTES:
+#			- by default 5 minutes delay is set for each board
+#			- when checking board for a first time, none of found threads is
+#			  is displayed in added channel(s) or status window, to prevent from
+#			  message spam
+#
+#	delboard [board_id]
+#	delboard [board_id] [network] [channel]
+#		Removes board settings, or only a single channel (if network and channel are
+#		given) from output.
+#
+#	limit [threads]
+#		Sets a maximum number of threads SMF will return. Useful when forums default
+#		settings are too low to cover more than one board.
+#
+#	board [board_id] [subaction] <subaction arguments>
+#		Allows to edit board-specific options.
+#
+#		SUBACTIONS:
+#
+#		ignore
+#			Board will not be checked.
+#
+#		unignore
+#			Board will be checked again.
+#
+#		delay [minutes]
+#			Sets how often information about a board will be checked. Each forum
+#			is checked in 20s cycle, where 
+#
+# /smf show <forum_id>
+#	Displays summary of forum options; if forum_id is omitted, all forums are displayed.
+#
+# /smf dump <forum_id>
+#	Display save table in raw format.
+#
+###
+#
+# SETTINGS
+#
+# smf_notify (default: on)
+#	Displays newly found threads in status window, even if given board produces no channel
+#	output. Uses format without prefix (see /smf edit [forum_id] addboard).
+#
+# smf_debug_get (default: off)
+#	Informs about every GET request before it's sent.
+#
+# smf_debug_moved_threads (default: off)
+#	Informs when moved thread is found.
+#
+# smf_debug_old_threads (default: off)
+#	Informs when old thread is found.
+#
+###
+#
+# v0.3
+#	delay setting can be set for each board
+#	fixed detection of old/known threads
+#	boards can be ignored now
+#	added debug settings
 #
 # v0.2
 #	reverted to non-threading model
@@ -93,16 +187,7 @@ sub smf_check()
 			next;
 		}
 
-		if( !defined($smf{$id}{delay}) || $smf{$id}{delay} <= 0 )
-		{
-			smf_info( $id, "Delay not set, setting to default (5 minutes)" );
-			$smf{$id}{delay} = 5;
-		}
-
-		next if( time < $smf{$id}{checked} + ($smf{$id}{delay}*60) );
 		smf_get( $id );
-		$smf{$id}{checked} = time;
-		smf_save();
 	}
 }
 
@@ -122,19 +207,46 @@ sub smf_get($)
 
 	return if( !scalar(keys( $smf{$id}{board} )));
 
-	my $url = sprintf( '%s/?action=.xml&type=smf&sa=news&boards=%s%s',
+	my @boards;
+
+	# find boards which need processing
+	foreach my $board ( keys( $smf{$id}{board} ))
+	{
+		next if( exists($smf{$id}{board}{$board}{ignore}) );
+
+		next if( time < $smf{$id}{board}{$board}{checked} + ($smf{$id}{board}{$board}{delay}*60) );
+
+		# "i am special!"
+		if( exists($smf{$id}{board}{$board}{first_time}) )
+		{
+			@boards = ( $board );
+			last;
+		}
+
+		push( @boards, $board );
+	}
+
+	return if( !scalar(@boards) );
+
+	my $url = sprintf( '%s/?action=.xml&type=smf&sa=news&board%s=%s%s',
 		$cfg_url,
-		join( ',', keys($smf{$id}{board} )),
+		scalar(@boards) != 1 ? "s" : "",
+		join( ',', sort{$a <=> $b} @boards ),
 		$smf{$id}{limit} > 0 ? sprintf( "&limit=%d", $smf{$id}{limit} ) : ""
 	);
 
-#	smf_info( $id, "GET %s", $url );
 
 	my $ua = LWP::UserAgent->new;
 	$ua->agent( sprintf( "irssi::%s/%s", $IRSSI{name}, $VERSION ));
 
 	my $request = HTTP::Request->new( GET => $url );
 	my $response = $ua->request( $request );
+
+	if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_get' ))
+	{
+		$url =~ s!^$smf{$id}{url}!!;
+		smf_info( $id, "GET \$URL/%s", $url );
+	}
 
 	if( !$response->is_success )
 	{
@@ -194,14 +306,65 @@ sub smf_get($)
 			next;
 		}
 
-		# skip known threads
-		if( exists($smf{$id}{board}{$board}{thread}{$thread}) )
+		$smf{$id}{board}{$board}{checked} = time;
+		if( exists($smf{$id}{board}{$board}{rdelay}) )
 		{
+			# TODO
+		}
+
+		# board checked for a first time
+		if( exists($smf{$id}{board}{$board}{first_time}) )
+		{
+			$smf{$id}{board}{$board}{thread}{$thread} = 1;
+			$skipped++;
+			next;
+		}
+
+		# skip moved threads, and let's hope forum users won't get funny ideas
+		if( $subject =~ /^MOVED\:/ )
+		{
+			if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_moved_threads' ))
+			{
+				$subject =~ s!^MOVED\: !!;
+				smf_info( $id, "Skipping moved thread \"%s\"", $subject );
+				$skipped++;
+			}
 			$smf{$id}{board}{$board}{thread}{$thread} = 1;
 			next;
 		}
 
-		next if( $subject =~ /^MOVED\:/ );
+		# skip known threads
+		if( exists($smf{$id}{board}{$board}{thread}{$thread}) )
+		{
+#			$skipped++;
+			$smf{$id}{board}{$board}{thread}{$thread} = 1;
+			next;
+		}
+
+		# skip threads with id lower than newest known thread
+		if( exists($smf{$id}{board}{$board}{thread}) )
+		{
+			my $highest = (sort{$b <=> $a} keys($smf{$id}{board}{$board}{thread}))[0];
+
+			if( $thread < $highest )
+			{
+				if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_old_threads' ))
+				{
+					smf_info( $id, "Skipping old thread \"%s\"", $subject );
+					$skipped++;
+				}
+				$smf{$id}{board}{$board}{thread}{$thread} = 1;
+				next;
+			}
+		}
+
+		$smf{$id}{board}{$board}{thread}{$thread} = 1;
+
+		if( Irssi::settings_get_bool( $IRSSI{name} . '_notify' ))
+		{
+			smf_info( $id, "\x02[\x02%s\x02]\x02 \"%s\" by %s \x02:\x02 %s",
+				$boardName, $subject, $poster, $link );
+		}
 
 		foreach my $network( sort{$a cmp $b} keys( $smf{$id}{board}{$board}{irc}) )
 		{
@@ -220,30 +383,20 @@ sub smf_get($)
 				push( @msg, "msg $channel $text" );
 			}
 
-			# board checked for a first time
-			if( exists($smf{$id}{board}{$board}{first_time}) )
-				{ $skipped += scalar(@msg); }
-
-			# already known board
-			else
+			foreach my $msg ( @msg )
 			{
-				foreach my $msg ( @msg )
-				{
-					$server->command( $msg );
-					smf_info( $id, "%s", $msg );
-				}
+				$server->command( $msg );
 			}
 		}
-		$smf{$id}{board}{$board}{thread}{$thread} = $board;
 	}
 	if( $skipped > 0 )
 	{
-		smf_info( $id, "Skipped %d message%s",
+		smf_info( $id, "Skipped %d thread%s",
 			$skipped, $skipped != 1 ? "s" : "" );
 	}
 
 	# clear list of ignored boards
-	foreach my $board ( sort{ $a <=> $b} keys( $smf{$id}{board} ))
+	foreach my $board ( @boards )
 	{
 		if( exists($smf{$id}{board}{$board}{first_time}) )
 		{
@@ -267,6 +420,38 @@ sub smf_load
 	my $file = Irssi::get_irssi_dir() . '/smf.dat';
 	if( -r $file )
 		{ %smf = %{retrieve( $file )}; }
+
+	foreach my $id ( sort{$a cmp $b} keys( %smf ))
+	{
+		my $update = 0;
+		my( $checked, $delay ) = ( 0, 5 );
+		if( exists($smf{$id}{checked}) )
+		{
+			$checked = $smf{$id}{checked};
+			delete($smf{$id}{checked});
+			$update = 1;
+		}
+		if( exists($smf{$id}{delay}) )
+		{
+			$delay = $smf{$id}{delay};
+			delete($smf{$id}{delay});
+			$update = 1;
+		}
+		foreach my $board ( sort{$a <=> $b} keys( $smf{$id}{board} ))
+		{
+			if( !exists($smf{$id}{board}{$board}{checked} ))
+			{
+				$smf{$id}{board}{$board}{checked} = 0;
+				$update = 1;
+			}
+			if( !exists($smf{$id}{board}{$board}{delay} ))
+			{
+				$smf{$id}{board}{$board}{delay} = $delay;
+				$update = 1;
+			}
+		}
+		smf_info( $id, "Updated configuration" ) if( $update );
+	}
 }
 
 sub cmd_smf
@@ -389,9 +574,11 @@ sub cmd_smf_edit
 			$prefix ne "" ? " (prefix: \x02$prefix\x02)" : ""
 		);
 
-		# don't mark board as unchecked if it's already added
+		# don't override setup of already added boards
 		if( !exists($smf{$id}{board}{$board}) )
 		{
+			$smf{$id}{board}{$board}{checked} = 0;
+			$smf{$id}{board}{$board}{delay} = 5;
 			smf_info( $id, "Marking board \x02%s\x02 as ignored (temporary)",
 				board_name( $id, $board ));
 			$smf{$id}{board}{$board}{first_time} = 1;
@@ -441,7 +628,7 @@ sub cmd_smf_edit
 
 			if( !scalar(keys($smf{$id}{board}{$board}{irc})) )
 			{
-				smf_log( $id, "No channels defined for board \x02%s\x",
+				smf_info( $id, "No channels defined for board \x02%s\x",
 					board_name( $id, $board ));
 				delete($smf{$id}{board}{$board}{irc});
 			}
@@ -458,24 +645,66 @@ sub cmd_smf_edit
 			delete($smf{$id}{board});
 		}
 	}
-	elsif( $action eq "delay" )
+	elsif( $action eq "board" )
 	{
 		my $error = undef;
-		if( scalar(@vals) < 1 )
-		    { $error = "missing arguments"; }
+		if( scalar(@vals) < 2 )
+			{ $error = "missing arguments"; }
 		elsif( !defined($vals[0]) )
-		    { $error = "missing delay time"; }
+			{ $error = "missing board id"; }
 		elsif( !($vals[0] =~ /^[0-9]+$/) )
-		    { $error = "delay time must be a number ($vals[0])" }
+			{ $error = "board id must be a number ($vals[0])"; }
+		elsif( !exists($smf{$id}{board}{$vals[0]}) )
+			{ $error = "unknown board \x02$vals[0]\x02"; }
 		if( defined($error) )
 		{
 			smf_log( "Error: %s : %s", $action, $error );
 			return;
 		}
+		my $board = $vals[0];
+		$action = lc($vals[1]);
+		if( defined($vals[2]) )
+			{ @vals = @vals[2..scalar(@vals)-1]; }
+		else
+			{ @vals = (); }
 
-		smf_info( $id, "Delay set to \x02%d\x02 minute%s",
-			$vals[0], $vals[0] != 1 ? "s" : "" );
-		$smf{$id}{delay} = int($vals[0]);
+		if( $action eq "ignore" )
+		{
+			smf_info( $id, "Marking board \x02%s\x02 as ignored",
+				board_name( $id, $board ));
+			$smf{$id}{board}{$board}{ignore} = 1;
+		}
+		elsif( $action eq "unignore" )
+		{
+			smf_info( $id, "Board \x02%s\x02 no longer ignored",
+				board_name( $id, $board ));
+			delete($smf{$id}{board}{$board}{ignore});
+		}
+		if( $action eq "delay" )
+		{
+			my $error = undef;
+			if( scalar(@vals) < 1 )
+				{ $error = "missing arguments"; }
+			elsif( !defined($vals[0]) )
+				{ $error = "missing delay time"; }
+			elsif( !($vals[0] =~ /^[0-9]+$/) )
+				{ $error = "delay time must be a number ($vals[0])" }
+			if( defined($error) )
+			{
+				smf_log( "Error: %s : %s", $action, $error );
+				return;
+			}
+
+			smf_info( $id, "Delay for board \x02%s\x02 set to \x02%d\x02 minute%s",
+				board_name( $id, $board ),
+				$vals[0], $vals[0] != 1 ? "s" : "" );
+			$smf{$id}{board}{$board}{delay} = int($vals[0]);
+		}
+		else
+		{
+			smf_log( "Error: unknown board action [%s]", $action );
+			return;
+		}
 	}
 	elsif( $action eq "limit" )
 	{
@@ -498,7 +727,6 @@ sub cmd_smf_edit
 			$vals[0], $vals[0] == 0 ? " (will use default forum values)" :"" );
 		$smf{$id}{limit} = int($vals[0]);
 	}
-
 	else
 	{
 		smf_log( "Error: unknown action [%s]", $action );
@@ -515,38 +743,46 @@ sub cmd_smf_show
 	{
 		my $id = shift;
 		if( defined($smf{$id}{stopped}) )
-			{ smf_info( $id, "STOPPED" ); }
-		smf_info( $id, "URL:     ".$smf{$id}{url} );
-		smf_info( $id, "Delay:   %d minute%s",
-			$smf{$id}{delay}, $smf{$id}{delay} != 1 ? "s" : "" );
+			{ smf_info( $id, "\x02STOPPED\x02" ); }
+		smf_info( $id, "URL:     \x02%s\x02", $smf{$id}{url} );
+			
 		if( $smf{$id}{limit} > 0 )
 		{
-			smf_info( $id, "Limit:   %d thread%s",
+			smf_info( $id, "Limit:   \x02%d\x02 thread%s",
 				$smf{$id}{limit}, $smf{$id}{limit} != 1 ? "s" : "" );
-		}
-		if( exists($smf{$id}{checked}) && $smf{$id}{checked} > 0 )
-		{
-			my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{checked});
-			smf_info( $id, "Last check: %d.%02d.%d, %02d:%02d:%02d",
-				$mday, $mon+1, $year+1900, $hour, $min, $sec );
-			($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{checked}+($smf{$id}{delay}*60));
-			smf_info( $id, "Next check: %d.%02d.%d, %02d:%02d:%02d",
-				$mday, $mon+1, $year+1900, $hour, $min, $sec );
 		}
 		return if( !exists($smf{$id}{board}) );
 
 		foreach my $board ( sort{$a <=> $b} keys( $smf{$id}{board} ))
 		{
 			smf_info( $id, "Board %s:", board_name( $id, $board ));
+			if( exists($smf{$id}{board}{$board}{ignore}) )
+				{ smf_info( $id, "  \x02IGNORED\x02" ); }
+			smf_info( $id, "  Delay:   \x02%d\x02 minute%s",
+				$smf{$id}{board}{$board}{delay},
+				$smf{$id}{board}{$board}{delay} != 1 ? "s" : "" );
+			if( $smf{$id}{board}{$board}{checked} > 0 )
+			{
+				my($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{board}{$board}{checked});
+				smf_info( $id, "  Last check: %d.%02d.%d, %02d:%02d:%02d",
+					$mday, $mon+1, $year+1900, $hour, $min, $sec );
+				($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($smf{$id}{board}{$board}{checked}+($smf{$id}{board}{$board}{delay}*60));
+				smf_info( $id, "  Next check: %d.%02d.%d, %02d:%02d:%02d",
+					$mday, $mon+1, $year+1900, $hour, $min, $sec );
+			}
+
 			foreach my $network ( sort{$a cmp $b} keys( %{ $smf{$id}{board}{$board}{irc} }))
 			{
 				my @channels;
 				foreach my $channel ( sort{$a cmp $b} keys( $smf{$id}{board}{$board}{irc}{$network} ))
 				{
 					my $prefix = $smf{$id}{board}{$board}{irc}{$network}{$channel};
-					push( @channels, $prefix eq "" ? $channel : "$channel (prefix: $prefix)" );
+					push( @channels, $prefix eq ""
+						? "\x02$channel\x02"
+						: "\x02$channel\x02 (prefix: \x02$prefix\x02)"
+					);
 				}
-				smf_info( $id, "  %s : %s",
+				smf_info( $id, "  \x02%s\x02 : %s",
 					$network, join( ", ", @channels ));
 			}
 		}
@@ -625,8 +861,12 @@ sub cmd_smf_dump
 	else
 		{ print CLIENTCRAP Dumper( $smf{$id} ); }
 }
-if( $have_dumper )
-	{ Irssi::command_bind( 'smf dump', \&cmd_smf_dump ); }
+
+Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_notify', 1 );
+
+Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_get', 0 );
+Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_moved_threads', 0 );
+Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_old_threads', 0 );
 
 Irssi::command_bind( 'smf', \&cmd_smf );
 Irssi::command_bind( 'smf add', \&cmd_smf_add );
@@ -636,9 +876,10 @@ Irssi::command_bind( 'smf show', \&cmd_smf_show );
 Irssi::command_bind( 'smf start', \&cmd_smf_start );
 Irssi::command_bind( 'smf stop', \&cmd_smf_stop );
 
-Irssi::command_bind( 'smf save', \&smf_save );
+if( $have_dumper )
+	{ Irssi::command_bind( 'smf dump', \&cmd_smf_dump ); }
 
 smf_load();
-$timer = Irssi::timeout_add( 1000*15, 'smf_check', undef );
+$timer = Irssi::timeout_add( 1000*20, 'smf_check', undef );
 
 #smf_log( "Loaded" );
