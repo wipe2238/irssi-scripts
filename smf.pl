@@ -441,7 +441,7 @@ sub smf_load
 		{
 			if( !exists($smf{$id}{board}{$board}{checked} ))
 			{
-				$smf{$id}{board}{$board}{checked} = 0;
+				$smf{$id}{board}{$board}{checked} = $checked;
 				$update = 1;
 			}
 			if( !exists($smf{$id}{board}{$board}{delay} ))
