@@ -28,6 +28,19 @@ $VERSION = '0.2.1';
 
 ###
 #
+# SETTINGS
+#
+# fonline_status_json
+#	Path or address of status.json generated on fodev.net
+#
+# fonline_cooldown_default (default: 30)
+#	Cooldown for [!fonline], in seconds
+#
+# fonline_cooldown_list (defualt: 900)
+#	Cooldown for [!fonline list], in seconds
+#
+###
+#
 # v0.2.1
 #	configuration moved to irssi settings
 #	servers status can be read from file or url
@@ -92,7 +105,7 @@ sub get_json()
 		my $response = $ua->request( $request );
 
 		if( !$response->is_success )
-			{ fonline_log( "HTML error : %d : %s", $response->code, $response->message ); }
+			{ fonline_log( "HTML error \x02%d\x02 : \x02%s\x02", $response->code, $response->message ); }
 		else
 			{ $json = decode_json( $response->content ); }
 	}
