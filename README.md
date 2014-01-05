@@ -1,4 +1,7 @@
 irssi-scripts
 =============
 
-smf.pl - SimpleMachines Forum monitor
+filename   | description
+-----------|-----------------------------
+fonline.pl | FOnline servers status
+smf.pl     | SimpleMachines Forum monitor

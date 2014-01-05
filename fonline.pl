@@ -41,6 +41,16 @@ $VERSION = '0.2.1';
 #
 ###
 #
+# PUBLIC COMMANDS
+#
+# !fonline
+#	Status of all (online) FOnline servers
+#
+# !fonline list
+#	
+#
+###
+#
 # v0.2.1
 #	configuration moved to irssi settings
 #	servers status can be read from file or url
