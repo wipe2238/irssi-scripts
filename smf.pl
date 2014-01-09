@@ -468,12 +468,12 @@ sub smf_get($)
 		my $subject = $xml->{article}{$thread}{subject};
 		$subject =~ s!^[\t\ ]*!!;
 		$subject =~ s![\t\ ]*$!!;
-		$subject = decode_entities( $subject );
+		$subject = Irssi::strip_codes( decode_entities( $subject ));
 
 		my $poster = $xml->{article}{$thread}{poster}{name};
 		$poster =~ s!^[\t\ ]*!!;
 		$poster =~ s![\t\ ]*$!!;
-		$poster = decode_entities( $poster );
+		$poster = Irssi::strip_codes( decode_entities( $poster ));
 
 		my $link = $xml->{article}{$thread}{link};
 		$link =~ s!^[\t\ ]*!!;
@@ -999,6 +999,8 @@ sub cmd_smf_show($$$)
 			}
 		}
 	}
+
+	smf_log( "" );
 
 	if( !defined($args) || $args eq "" )
 	{
