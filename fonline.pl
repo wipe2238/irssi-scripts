@@ -15,7 +15,7 @@ use Irssi;
 use JSON;
 use LWP;
 
-$VERSION = '0.2.1';
+$VERSION = '0.2.2';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'fonline',
@@ -51,6 +51,11 @@ $VERSION = '0.2.1';
 #
 ###
 #
+# v0.2.2
+#	hilights on official channels
+#	allows to block requests from specific users
+#	no cooldown is set if used by script owner
+#
 # v0.2.1
 #	configuration moved to irssi settings
 #	servers status can be read from file or url
@@ -68,6 +73,21 @@ $VERSION = '0.2.1';
 
 my %cooldown;
 my $sub_prefix = 'msg';
+
+my %channels = (
+	'forestnet' => {
+		'#ashesofphoenix'	=> [ 'phoenix' ],
+		'#fo2'			=> [ 'fonline2', 'fonline2OBT' ],
+		'#fode'			=> [ 'fode', 'fodeCBT' ],
+		'#reloaded'		=> [ 'reloaded' ],
+	}
+);
+
+my %blocked = (
+#	'chatnet' => {
+#		'nickname' => 1
+#	}
+);
 
 sub fonline_log($;@)
 {
@@ -168,6 +188,15 @@ sub say_check
 		else
 			{ $type = lc($type); }
 
+		# check blocked users
+		my $net = lc($server->{chatnet});
+		my $block = lc($nick);
+		if( exists($blocked{$net}{$block}) )
+		{
+			fonline_log( "Skipped request by %s at %s", $nick, $channel );
+			return;
+		}
+
 		# find a function
 		my $sub = UNIVERSAL::can( __PACKAGE__, sprintf( "%s_%s", $sub_prefix, $type ));
 		return if( !defined($sub) );
@@ -196,8 +225,11 @@ sub say_check
 		# pass data to function
 		&$sub( $server, $channel, $nick, $json, $override );
 
-		# set cooldown
-		$cooldown{$type}{$channel} = time;
+		if( !$override )
+		{
+			# set cooldown
+			$cooldown{$type}{$channel} = time;
+		}
 	}
 }
 
@@ -211,18 +243,37 @@ sub msg_default # !fonline
 	{
 		my( $text, $empty, $first ) = ( "", 0, 1 );
 
+		my %tags;
+		foreach my $network ( keys( %channels ))
+		{
+			my $net = lc($network);
+			if( $net eq lc($server->{chatnet}) )
+			{
+				my $chan = lc($channel);
+				if( exists($channels{$net}{$chan}) )
+				{
+					%tags = map { $_ => 1 } @{ $channels{$net}{$chan} };
+				}
+			}
+		}
+
 		foreach my $key ( sort{ $json->{fonline}{server}{$a}{Name} cmp $json->{fonline}{server}{$b}{Name} } keys %{ $json->{fonline}{server} } )
 		{
+			my $bold = 0;
+			$bold = 1 if( exists($tags{$key}) );
+
 			if( $json->{fonline}{server}{$key}{Checked} > 0 &&
 				$json->{fonline}{server}{$key}{Uptime} > 0 )
 			{
 				if( $json->{fonline}{server}{$key}{Players} > 0 )
 				{
-					$text .= sprintf( "%s%s: %d (%.1f%%)",
+					$text .= sprintf( "%s%s%s: %d (%.1f%%)%s",
 						$first ? "" : ", ",
+						$bold ? "\x02" : "",
 						$json->{fonline}{server}{$key}{Name},
 						$json->{fonline}{server}{$key}{Players},
-						(100*$json->{fonline}{server}{$key}{Players})/$json->{fonline}{players}
+						(100*$json->{fonline}{server}{$key}{Players})/$json->{fonline}{players},
+						$bold ? "\x02" : ""
 					);
 					$first = 0;
 				}
