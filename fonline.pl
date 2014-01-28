@@ -84,9 +84,9 @@ my %channels = (
 );
 
 my %blocked = (
-#	'chatnet' => {
-#		'nickname' => 1
-#	}
+	'forestnet' => {
+		'stration' => 1
+	}
 );
 
 sub fonline_log($;@)
