@@ -18,7 +18,7 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-$VERSION = '0.3.1-RC';
+$VERSION = '0.3.1';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'smf',
@@ -128,10 +128,18 @@ $VERSION = '0.3.1-RC';
 #
 ###
 #
-# v0.3.1 (WIP)
+# SIGNALS
+#
+# smf ($forumName, $boardName, $title, $author, $link)
+#	emitted when new thread is found
+#
+###
+#
+# v0.3.1
 #	addboard and delboard requires same set of arguments
 #	smf_notify setting renamed to smf_status
 #	added smf_timeout setting
+#	added singal emitting on new threads
 #
 # v0.3
 #	delay setting can be set for each board
@@ -553,6 +561,8 @@ sub smf_get($)
 			smf_info( $forum, "\x02[\x02%s\x02]\x02 \"%s\" by %s \x02:\x02 %s",
 				$boardName, $subject, $poster, $link );
 		}
+
+		Irssi::signal_emit( "smf", $forum, $boardName, $subject, $poster, $link );
 
 		next if( !exists($smf{$forum}{board}{$board}{irc}) );
 
@@ -1097,4 +1107,6 @@ if( $have_dumper )
 smf_load();
 my $timer = Irssi::timeout_add( 1000*20, 'smf_check', undef );
 
+my $signal_smf = { "smf" => [qw/string string string string string/] }; 
+Irssi::signal_register( $signal_smf );
 #smf_log( "Loaded" );
