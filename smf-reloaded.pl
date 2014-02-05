@@ -46,7 +46,7 @@ sub smf_reloaded($$$$$)
 	return if( lc($forum) ne 'reloaded' );
 	return if( $lauthor ne 'kilgore' && $lauthor ne 'docan' );
 
-	my $message = sprintf( "\x02[\x034%s\x03]\x02 \"%s\" by %s \x02\x34:\x03\x02 %s",
+	my $message = sprintf( "\x02[\x034%s\x03]\x02 \"%s\" by %s \x02\x034:\x03\x02 %s",
 		$board, $title, $author, $link );
 
 	if( lc($board) eq 'auctions' && $ltitle =~ /game master/ )
