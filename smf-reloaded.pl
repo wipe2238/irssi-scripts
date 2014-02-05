@@ -44,7 +44,7 @@ sub smf_reloaded($$$$$)
 	my $lauthor = lc($author);
 	my $ltitle  = lc($title);
 	return if( lc($forum) ne 'reloaded' );
-	return if( $lauthor ne 'kilgore' && $lauthor ne 'docan' );
+	return if( $lauthor ne 'kilgore' && $lauthor ne 'cubik2k' && $lauthor ne 'docan' );
 
 	my $message = sprintf( "\x02[\x034%s\x03]\x02 \"%s\" by %s \x02\x034:\x03\x02 %s",
 		$board, $title, $author, $link );
