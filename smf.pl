@@ -18,7 +18,7 @@ use LWP;
 use Storable;
 use XML::Simple;
 
-$VERSION = '0.3.1';
+$VERSION = '0.3.2';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'smf',
@@ -120,6 +120,9 @@ $VERSION = '0.3.1';
 # smf_debug_get (default: off)
 #	Informs about every GET request before it's sent.
 #
+# smf_debug_get_errors (default: off)
+#	Informs about errors spotted when sending GET request.
+#
 # smf_debug_moved_threads (default: off)
 #	Informs when moved thread is found.
 #
@@ -134,6 +137,12 @@ $VERSION = '0.3.1';
 #	emitted when new thread is found
 #
 ###
+#
+# v0.3.2
+#	empty boards are now properly processed
+#	fixed never-ending notifications about moved threads
+#	fixed crash on invalid xml
+#	fixed incorrent enforced delay on errors
 #
 # v0.3.1
 #	addboard and delboard requires same set of arguments
@@ -397,15 +406,28 @@ sub smf_get($)
 	if( !$response->is_success )
 	{
 		$error = sprintf( "HTML error \x02%d\x02 : \x02%s\x02",
-				$response->code, $response->message );
+			$response->code, $response->message );
 	}
+
 	# make sure we received proper response type, or XML::Parser will crash the script;
 	# happens when we get regular html page (for example when adding non-existing board or
 	# http server returns error page)
+
 	elsif( lc($content_type) ne 'text/xml' )
 	{
 		$error = sprintf( "ERROR: Invalid content type (expected \x02text/xml\x02, got \x02%s\x02)",
 			$content_type );
+	}
+
+	my $xml = undef;
+	if( !defined( $error ))
+	{
+		# XML::Parser again...
+		$xml = eval { XMLin( $response->content ); };
+		if( $@ )
+		{
+			$error = sprintf( "XML ERROR : \x02%s\x02", $@ );
+		}
 	}
 
 	if( defined($error) )
@@ -416,18 +438,18 @@ sub smf_get($)
 			{ $smf{$forum}{is_error} = 0; }
 		$smf{$forum}{is_error}++;
 
-		if( $smf{$forum}{is_error} <= $error_tolerance )
+		if( $smf{$forum}{is_error} <= $error_tolerance && Irssi::settings_get_bool( $IRSSI{name} . '_debug_get_errors' ))
 			{ smf_info( $forum, $error ); }
 
 		if( $smf{$forum}{is_error} >= $error_tolerance )
 		{
-			if( $smf{$forum}{is_error} == $error_tolerance )
-			{
-				smf_info( $forum, "Too many errors - disabling reports, enforcing 5 minutes delay" );
-			}
+			if( $smf{$forum}{is_error} == $error_tolerance && Irssi::settings_get_bool( $IRSSI{name} . '_debug_get_errors' ))
+				{ smf_info( $forum, "Too many errors - disabling reports, enforcing 5 minutes delay" ); }
+
 			foreach my $board ( @boards )
 			{
-				$smf{$forum}{board}{$board}{checked} = (time + $smf{$forum}{board}{$board}{delay}) - (60*5*1000);
+				# TODO: better way
+				$smf{$forum}{board}{$board}{checked} = (time() + ($smf{$forum}{board}{$board}{delay}*60)) - (60*5);
 			}
 		}
 
@@ -437,18 +459,14 @@ sub smf_get($)
 
 	if( exists($smf{$forum}{is_error}) )
 	{
-		if( $smf{$forum}{is_error} >= $error_tolerance )
+		if( $smf{$forum}{is_error} >= $error_tolerance && Irssi::settings_get_bool( $IRSSI{name} . '_debug_get_errors' ))
 			{ smf_info( $forum, "Enabling HTML errors reports" ); }
 
 		delete( $smf{$forum}{is_error} );
 	}
 
-	my $xml = XMLin( $response->content );
-	if( !exists($xml->{article}) )
-	{
-		smf_info( $forum, "INVALID XML : missing XML->{article}" );
-		return;
-	}
+	# hotfix for empty boards
+	$xml->{article} = {} if( !exists($xml->{article}) );
 
 	my $skipped = 0;
 	foreach my $thread ( sort{ $a <=> $b } keys( $xml->{article} ))
@@ -514,20 +532,6 @@ sub smf_get($)
 			next;
 		}
 
-		# skip moved threads,
-		# and let's hope forum users won't get funny ideas
-		if( $subject =~ /^MOVED\:/ )
-		{
-			if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_moved_threads' ))
-			{
-				$subject =~ s!^MOVED\: !!;
-				smf_info( $forum, "Skipping moved thread \"%s\"", $subject );
-				$skipped++;
-			}
-			$smf{$forum}{board}{$board}{thread}{$thread} = 1;
-			next;
-		}
-
 		if( exists($smf{$forum}{board}{$board}{thread}) )
 		{
 			# skip known threads
@@ -552,6 +556,20 @@ sub smf_get($)
 				$smf{$forum}{board}{$board}{thread}{$thread} = 1;
 				next;
 			}
+		}
+
+		# skip moved threads,
+		# and let's hope forum users won't get funny ideas
+		if( $subject =~ /^MOVED\:/ )
+		{
+			if( Irssi::settings_get_bool( $IRSSI{name} . '_debug_moved_threads' ))
+			{
+				$subject =~ s!^MOVED\: !!;
+				smf_info( $forum, "Skipping moved thread \"%s\"", $subject );
+				$skipped++;
+			}
+			$smf{$forum}{board}{$board}{thread}{$thread} = 1;
+			next;
 		}
 
 		$smf{$forum}{board}{$board}{thread}{$thread} = 1;
@@ -1090,6 +1108,7 @@ Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_status', 1 );
 Irssi::settings_add_int(  $IRSSI{name}, $IRSSI{name} . '_timeout', 5 );
 
 Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_get', 0 );
+Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_get_errors', 0 );
 Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_moved_threads', 0 );
 Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_debug_old_threads', 0 );
 
