@@ -142,6 +142,7 @@ $VERSION = '0.3.2';
 #	empty boards are now properly processed
 #	fixed never-ending notifications about moved threads
 #	fixed crash on invalid xml
+#	fixed crash on boards with just one topic
 #	fixed incorrent enforced delay on errors
 #
 # v0.3.1
@@ -466,11 +467,26 @@ sub smf_get($)
 	}
 
 	# hotfix for empty boards
-	$xml->{article} = {} if( !exists($xml->{article}) );
+	if( !exists($xml->{article}) )
+	{
+		$xml->{article} = {} ;
+	}
+	# hotfix for boards with only one topic
+	elsif( exists($xml->{article}{id}) && exists($xml->{article}{board}) && exists($xml->{article}{subject}) && exists($xml->{article}{poster}) && exists($xml->{article}{link}) )
+	{
+		my $article = $xml->{article};
+		my $thread = int($xml->{article}{id});
+
+		delete( $xml->{article} );
+
+		$xml->{article}{$thread} = $article;
+	}
+	# else OK?
 
 	my $skipped = 0;
 	foreach my $thread ( sort{ $a <=> $b } keys( $xml->{article} ))
 	{
+		next if( !exists($xml->{article}{$thread}{board}) );
 		next if( !exists($xml->{article}{$thread}{board}{id}) );
 		next if( !exists($xml->{article}{$thread}{board}{name}) );
 

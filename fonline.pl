@@ -30,30 +30,45 @@ $VERSION = '0.3';
 #
 # SETTINGS
 #
+# fonline_config_json
+#	Path or address of config.json
+#
 # fonline_status_json
 #	Path or address of status.json generated on fodev.net
 #
 # fonline_cooldown_default (default: 30)
-#	Cooldown for [!fonline], in seconds
+#	Cooldown for [!fonline] and [!fonline status], in seconds
 #
 # fonline_cooldown_list (defualt: 900)
 #	Cooldown for [!fonline list], in seconds
+#
+# fonline_cooldown_help (default: 60)
+#	Cooldown for [!fonline help], in seconds
+#
+# NOTE:
+#	When script is running, each channel have own cooldown for requests
 #
 ###
 #
 # PUBLIC COMMANDS
 #
 # !fonline
+# !fonline status [option]
 #	Status of all (online) FOnline servers
+#	Options:
+#		all	does not hide empty servers
 #
 # !fonline list
-#	
+#	Lists all known servers
 #
 ###
 #
 # v0.3
 #
 #	support for new format
+#	hilight number of players if it's equal or greater than 1000
+#	default sub changed from 'default' to 'status'
+#	added [!fonline status all] to list empty servers
 #
 # v0.2.2
 #	hilights on official channels
@@ -85,7 +100,7 @@ my %channels = (
 		'#fo2'			=> [ 'fonline2' ],
 		'#fode'			=> [ 'fode' ],
 		'#reloaded'		=> [ 'reloaded' ],
-		# unofficial channels
+		# script home channel
 		'#sq'			=> [ 'fonline2', 'reloaded' ]
 	}
 );
@@ -201,12 +216,12 @@ sub say_check
 {
 	my( $server, $msg, $nick, $channel, $override ) = @_;
 
-	if( $msg =~ /^[\t\ ]*\!fonline[\t\ ]*([A-Za-z]*)[\t\ ]*([A-Za-z\t\ ]*)$/ )
+	if( $msg =~ /^[\t\ ]*\!fonline[\t\ ]*([A-Za-z]*)[\t\ ]*([A-Za-z0-9\t\ ]*)$/ )
 	{
 		my $type = $1;
-		my $args = $2; # TODO: pass to sub
+		my $args = $2;
 		if( !defined($type) || $type eq "" )
-			{ $type = "default"; }
+			{ $type = "status"; }
 		else
 			{ $type = lc($type); }
 
@@ -223,7 +238,7 @@ sub say_check
 		my $sub = UNIVERSAL::can( __PACKAGE__, sprintf( "%s_%s", $sub_prefix, $type ));
 		return if( !defined($sub) );
 
-		# check cooldown
+		# check cooldown (if not triggered by self)
 		my $cooldown = Irssi::settings_get_int(
 			sprintf( "%s_cooldown_%s", $IRSSI{name}, $type ));
 
@@ -246,26 +261,30 @@ sub say_check
 		if( !defined($status) || !exists($status->{fonline}{status}) )
 			{ return; }
 
-		# pass data to function
-		&$sub( $server, $channel, $nick, $config, $status, $override );
+		$config = $config->{fonline}{config};
+		$status = $status->{fonline}{status};
 
+		# pass data to function
+		my @arguments = split( /\t\ /, $args );
+		&$sub( $server, $channel, $nick, $config, $status, $override, @arguments );
+
+		# set cooldown (if not triggered by self)
 		if( !$override )
 		{
-			# set cooldown
 			$cooldown{$type}{$channel} = time;
 		}
 	}
 }
 
-sub msg_default # !fonline
+sub msg_status # !fonline status
 {
-	my( $server, $channel, $nick, $config, $status, $override ) = @_;
+	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
 
-	return if( !defined($config) || !exists($config->{fonline}{config}) );
-	return if( !defined($status) || !exists($status->{fonline}{status}) );
-
-	$config = $config->{fonline}{config};
-	$status = $status->{fonline}{status};
+	my $all = 0;
+	if( scalar(@arguments) )
+	{
+		$all = ($arguments[0] eq 'all');
+	}
 
 	if( $status->{servers} > 0 )
 	{
@@ -287,15 +306,15 @@ sub msg_default # !fonline
 
 		foreach my $key ( sort{ $config->{server}{$a}{name} cmp $config->{server}{$b}{name} } keys %{ $config->{server} } )
 		{
+			next if( !exists($status->{server}{$key}) );
+
 			my $bold = 0;
 			$bold = 1 if( exists($tags{$key}) );
-
-			next if( !exists($status->{server}{$key}) );
 
 			if( $status->{server}{$key}{checked} > 0 &&
 				$status->{server}{$key}{uptime} > 0 )
 			{
-				if( $status->{server}{$key}{players} > 0 )
+				if( $all || $status->{server}{$key}{players} > 0 )
 				{
 					$text .= sprintf( "%s%s%s: %d (%.1f%%)%s",
 						$first ? "" : ", ",
@@ -312,11 +331,14 @@ sub msg_default # !fonline
 			}
 		}
 
-		$text = sprintf( "%sServer%s: %d%s, Player%s: %d [%s]",
+		$text = sprintf( "%sServer%s: %d%s, Player%s: %s%d%s [%s]",
 			$nick ne "" ? "\x02$nick\x02: " : "",
 			$status->{servers} > 1 ? "s" : "", $status->{servers},
 			$empty > 0 ? " ($empty empty)" : "",
-			$status->{players} > 1 ? "s" : "", $status->{players},
+			$status->{players} > 1 ? "s" : "",
+			$status->{players} >= 1000 ? "\x02" : "",
+			$status->{players},
+			$status->{players} >= 1000 ? "\x02" : "",
 			$text
 		);
 
@@ -333,15 +355,9 @@ sub msg_default # !fonline
 	}
 }
 
-sub msg_list
+sub msg_list # !fonline list
 {
-	my( $server, $channel, $nick, $config, $status, $override ) = @_;
-
-	return if( !defined($config) || !exists($config->{fonline}{config}) );
-	return if( !defined($status) || !exists($status->{fonline}{status}) );
-
-	$config = $config->{fonline}{config};
-	$status = $status->{fonline}{status};
+	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
 
 	my( @known, @unknown, @closed );
 
@@ -403,9 +419,9 @@ sub msg_list
 		$channel, $total, $total != 1 ? "s" : "" ));
 }
 
-sub msg_help
+sub msg_help # !fonline help
 {
-	my( $server, $channel, $nick, $json, $override ) = @_;
+	my( $server, $channel, $nick, $json, $override, @arguments ) = @_;
 
 	return if( $nick eq "" );
 
@@ -415,9 +431,9 @@ sub msg_help
 #Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_override_cooldown', 0 );
 Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_config_json', 'http://fodev.net/status/data/config.json' );
 Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_status_json', 'http://fodev.net/status/data/status.json' );
-fonline_cooldown( 'default', 30 );
-fonline_cooldown( 'list',    60*15 );
-fonline_cooldown( 'help',    60 );
+fonline_cooldown( 'status', 30 );
+fonline_cooldown( 'list',   60*15 );
+fonline_cooldown( 'help',   60 );
 
 Irssi::signal_add( 'message own_public', 'say_own' );
 Irssi::signal_add( 'message public',     'say_other' );
