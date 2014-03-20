@@ -14,15 +14,16 @@ use Irssi;
 
 use JSON;
 use LWP;
+use POSIX qw( floor strftime );
 
-$VERSION = '0.3';
+$VERSION = '0.3.1';
 %IRSSI = (
 	'authors'     => 'Wipe',
 	'name'        => 'fonline',
 	'description' => 'FOnline servers status',
 	'url'         => 'https://github.com/wipe2238/irssi-scripts/',
 #	'commands'    => 'fonline',
-	'modules'     => 'JSON LWP UNIVERSAL',
+	'modules'     => 'JSON LWP POSIX UNIVERSAL',
 	'license'     => 'GPL',
 );
 
@@ -30,14 +31,20 @@ $VERSION = '0.3';
 #
 # SETTINGS
 #
+# fonline_data
+#	Path or address of directory containing status data
+#
 # fonline_config_json
-#	Path or address of config.json
+#	Main configuration file (without path/address)
 #
-# fonline_status_json
-#	Path or address of status.json generated on fodev.net
-#
-# fonline_cooldown_default (default: 30)
+# fonline_cooldown_status (default: 30)
 #	Cooldown for [!fonline] and [!fonline status], in seconds
+#
+# fonline_cooldown_server (default: 30)
+#	Cooldown for [!fonline server], [!status] and [!s], in seconds
+#
+# fonline_cooldown_info (default: 60)
+#	Cooldown for [!fonline info], in seconds
 #
 # fonline_cooldown_list (defualt: 900)
 #	Cooldown for [!fonline list], in seconds
@@ -58,10 +65,28 @@ $VERSION = '0.3';
 #	Options:
 #		all	does not hide empty servers
 #
+# !fonline server <server_id>
+# !status
+# !s
+#	Short status of single server
+#	!s and !status shortcuts works only on channels defined in %status_channels
+#
+# !fonline info <server_id>
+#	Basic informations about given server
+#
 # !fonline list
 #	Lists all known servers
 #
 ###
+#
+# v0.3.1
+#
+#	more integration with fodev-status
+#	added [!fonline info]
+#	added [!fonline server]
+#	added fonline_data setting
+#	changed meaning of fonline_config_json setting
+#	removed fonline_status_json setting
 #
 # v0.3
 #
@@ -105,6 +130,12 @@ my %channels = (
 	}
 );
 
+my %status_channels = (
+	'forestnet' => {
+		'#2238'			=> 'fo2238',
+	}
+);
+
 my %blocked = (
 	'forestnet' => {
 		'stration' => 1
@@ -137,21 +168,60 @@ sub fonline_cooldown($$)
 	);
 }
 
-sub get_json($)
+# from https://github.com/rotators/fodev-status/blob/master/FOstatus.pm
+sub config_path($$;%) 
 {
-	my( $fileurl ) = @_;
+	my( $config, $name, %args ) = @_;
+	my $result = undef;
+
+	if( defined($config) && exists($config->{files}) )
+	{
+		if( exists($config->{files}{$name}) )
+		{
+			$result = $config->{files}{$name};
+			if( exists($config->{dirs}) )
+			{
+				foreach my $dir ( keys( $config->{dirs} ))
+				{
+					my $from = '{DIR:'.$dir.'}';
+					my $to = $config->{dirs}{$dir};
+					$result =~ s!$from!$to!g;
+				}
+			}
+			if( scalar(keys(%args)) > 0 )
+			{
+				foreach my $key ( keys( %args ))
+				{
+					my $from = '{'.$key.'}';
+					my $to = $args{$key};
+					$result =~ s!$from!$to!g;
+				}
+			}
+		}
+	}
+
+	return( $result );
+}
+
+sub get_json($;$)
+{
+	my( $fileurl, $id ) = @_;
 	my $json = undef;
 
 	if( $fileurl =~ /^http\:\/\// || $fileurl =~ /^https\:\/\// )
 	{
 		my $ua = LWP::UserAgent->new;
 		$ua->agent( sprintf( "irssi::%s/%s", $IRSSI{name}, $VERSION ));
+		$ua->timeout( 5 );
 
 		my $request = HTTP::Request->new( GET => $fileurl );
 		my $response = $ua->request( $request );
 
 		if( !$response->is_success )
-			{ fonline_log( "HTML error \x02%d\x02 : \x02%s\x02", $response->code, $response->message ); }
+		{
+			fonline_log( "HTML error [%s] \x02%d\x02 : \x02%s\x02",
+				$fileurl, $response->code, $response->message );
+		}
 		else
 			{ $json = eval{ decode_json( $response->content ); }; }
 	}
@@ -160,7 +230,7 @@ sub get_json($)
 		if( ! -r $fileurl )
 		{
 			fonline_log( "File not readable: %s", $fileurl );
-			return;
+			return( undef );
 		}
 
 		if( open( my $file, '<', $fileurl ))
@@ -172,6 +242,37 @@ sub get_json($)
 		}
 	}
 
+	if( defined($json) && defined($id) )
+	{
+		return( undef ) if( !exists($json->{fonline}) );
+		return( undef ) if( !exists($json->{fonline}{$id}) );
+		$json = $json->{fonline}{$id};
+	}
+
+	return( $json );
+}
+
+sub get_json_by_id($$)
+{
+	my( $config, $id ) = ( @_ );
+
+	return( undef ) if( !defined($config) || !defined($id) );
+
+	my $data = Irssi::settings_get_str( $IRSSI{name} . '_data' );
+	if( !defined($data) || $data eq "" )
+	{
+		fonline_log( "Invalid setting [%s_data]", $IRSSI{name} );
+		return( undef );
+	}
+
+	my $json = undef;
+
+	my $path = config_path( $config, $id );
+	if( defined($path) )
+	{
+		$json = get_json( sprintf( "%s/%s", $data, $path ), $id );
+	}
+
 	return( $json );
 }
 
@@ -179,22 +280,24 @@ sub get_config_status_json()
 {
 	my( $config, $status ) = ( undef, undef );
 
+	my $data = Irssi::settings_get_str( $IRSSI{name} . '_data' );
 	my $config_json = Irssi::settings_get_str( $IRSSI{name} . '_config_json' );
-	my $status_json = Irssi::settings_get_str( $IRSSI{name} . '_status_json' );
+
+	if( !defined($data) || $data eq "" )
+	{
+		fonline_log( "Invalid setting [%s_data]", $IRSSI{name} );
+		return;
+	}
 
 	if( !defined($config_json) || $config_json eq "" )
 	{
 		fonline_log( "Invalid setting [%s_config_json]", $IRSSI{name} );
 		return;
 	}
-	if( !defined($status_json) || $status_json eq "" )
-	{
-		fonline_log( "Invalid setting [%s_status_json]", $IRSSI{name} );
-		return;
-	}
 
-	$config = get_json( $config_json );
-	$status = get_json( $status_json );
+	$config = get_json( sprintf( "%s/%s", $data, $config_json ), 'config' );
+	if( defined($config) )
+		{ $status = get_json_by_id( $config, 'status' ); }
 
 	return( $config, $status );
 }
@@ -216,7 +319,15 @@ sub say_check
 {
 	my( $server, $msg, $nick, $channel, $override ) = @_;
 
-	if( $msg =~ /^[\t\ ]*\!fonline[\t\ ]*([A-Za-z]*)[\t\ ]*([A-Za-z0-9\t\ ]*)$/ )
+	# support !s and !status by editing incoming message
+	if( $msg =~ /^[\t\ ]*\!s[\t\ ]*$/ || $msg =~ /^[\t\ ]*\!status[\t\ ]*$/ )
+	{
+		my $net = lc($server->{chatnet});
+		if( exists($status_channels{$net}{$channel}) )
+			{ $msg = '!fonline server '.$status_channels{$net}{$channel}; }
+	}
+
+	if( $msg =~ /^[\t\ ]*\!fonline[\t\ ]*([A-Za-z]*)[\t\ ]*([A-Za-z0-9_\t\ ]*)$/ )
 	{
 		my $type = $1;
 		my $args = $2;
@@ -256,13 +367,8 @@ sub say_check
 
 		# get config and status data
 		my( $config, $status ) = get_config_status_json();
-		if( !defined($config) || !exists($config->{fonline}{config}) )
-			{ return; }
-		if( !defined($status) || !exists($status->{fonline}{status}) )
-			{ return; }
-
-		$config = $config->{fonline}{config};
-		$status = $status->{fonline}{status};
+		return if( !defined($config) );
+		return if( !defined($status) );
 
 		# pass data to function
 		my @arguments = split( /\t\ /, $args );
@@ -276,7 +382,7 @@ sub say_check
 	}
 }
 
-sub msg_status # !fonline status
+sub msg_status
 {
 	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
 
@@ -355,11 +461,164 @@ sub msg_status # !fonline status
 	}
 }
 
-sub msg_list # !fonline list
+sub msg_server
 {
 	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
 
-	my( @known, @unknown, @closed );
+	return if( !scalar(@arguments) );
+
+	my $key = $arguments[0];
+	return if( !exists($config->{server}{$key}) );
+
+	sub extract_seconds($$)
+	{
+		my( $seconds, $need ) = ( @_ );
+		if( $seconds >= $need )
+		{
+			my $res = floor( $seconds / $need );
+			$_[0] -= $res * $need;
+		}
+	}
+
+	my $text = 'Server is ';
+	if( exists($status->{server}{$key}) && $status->{server}{$key}{uptime} >= 0 )
+	{
+		$text .= sprintf( "\x02online\x02. Players: \x02%d\x02",
+			$status->{server}{$key}{players} );
+	}
+	elsif( exists($config->{server}{$key}{closed}) && $config->{server}{$key}{closed} )
+	{
+		$text .= "\x02closed\x02";
+	}
+	elsif( exists($config->{server}{$key}{singleplayer}) && $config->{server}{$key}{singleplayer} )
+	{
+		$text = sprintf( "\x02%s\x02 is a singleplayer game; ", $config->{server}{$key}{name} );
+		foreach my $option ( 'website', 'link' )
+		{
+			if( exists($config->{server}{$key}{$option}) )
+			{
+				$text .= sprintf( " see \x02%s\x02 for details", $config->{server}{$key}{$option} );
+				last;
+			}
+		}
+	}
+	else
+	{
+		$text .= "\x02offline\x02";
+	}
+
+	$text = sprintf( "\x02%s\x02: %s", $nick, $text ) if( $nick ne "" );
+	$server->command( sprintf( "msg %s %s", $channel, $text ));	
+}
+
+sub msg_info
+{
+	my( $irc_server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
+
+	return if( !scalar(@arguments) );
+	my $fid = $arguments[0];
+	return if( !exists($config->{server}{$fid}) );
+	my $server = $config->{server}{$fid};
+	my $closed = (exists($server->{closed}) && $server->{closed});
+	my $singleplayer = (exists($server->{singleplayer}) && $server->{singleplayer});
+
+	my $lifetime = get_json_by_id( $config, 'lifetime' );
+	$lifetime = $lifetime->{server}{$fid} if( defined($lifetime) );
+
+	my @text;
+
+	if( $singleplayer )
+		{ push( @text, sprintf( "\x02%s\x02 (singleplayer)", $server->{name} )); }
+	elsif( !$singleplayer && defined($lifetime) )
+	{
+		my $tracked = sprintf( "%s",
+			strftime( "%d %B %Y", localtime($lifetime->{introduced}) ));
+
+		if( $closed )
+		{
+			$tracked .= sprintf( " to %s",
+				strftime( "%d %B %Y", localtime($lifetime->{seen}) ));
+		}
+
+		push( @text, sprintf( "\x02%s\x02 (tracked since %s)", $server->{name}, $tracked ));
+	}
+	else
+		{ push( @text, sprintf( "\x02%s\x02", $server->{name} )); }
+
+	if( !$singleplayer )
+	{
+		my $txt = "\x02Status\x02:      ";
+		if( $closed )
+			{ $txt .= 'Closed'; }
+		elsif( exists($status->{server}{$fid}) && $status->{server}{$fid}{uptime} >= 0 )
+		{
+			# TODO: since
+			$txt .= sprintf( "Online (players: %s)",
+				$status->{server}{$fid}{players} > 0
+					? $status->{server}{$fid}{players}
+					: 'none' );
+		}
+		else
+		{
+			$txt .= 'Offline';
+			if( exists($lifetime->{seen}) )
+			{
+				my $now = strftime( "%d %B %Y", localtime(time) );
+				my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+				$txt .= sprintf( " since %s", $seen )
+					if( $now ne $seen );
+			}
+		}
+
+		push( @text, $txt );
+	}
+
+	if( !$singleplayer && !$closed &&
+		exists($server->{host}) && exists($server->{port}) &&
+		uc($server->{host}) ne 'UNKNOWN' &&
+		$server->{port} > 1024 && $server->{port} < 65535 )
+	{
+		push( @text, sprintf( "\x02Address\x02:     %s : %s",
+			$server->{host}, $server->{port} ));
+	}
+
+	foreach my $option ( 'website', 'link' )
+	{
+		if( exists($server->{$option}) )
+		{
+			push( @text, sprintf( "\x02%s\x02:%s%s",
+				ucfirst($option),
+				' ' x (12-length($option)),
+				$server->{$option} ));
+			last;
+		}
+	}
+
+	if( exists($server->{source}) )
+	{
+		push( @text, sprintf( "\x02Source\x02:      %s", $server->{source} ));
+	}
+
+	if( exists($server->{irc}) && substr( $server->{irc}, 0, 1 ) eq '#' )
+	{
+		push( @text, sprintf( "\x02IRC channel\x02: %s @ ForestNet%s",
+			$server->{irc},
+			lc($server->{irc}) eq lc($channel) ? ' (you already found it, woohoo!)' : ''
+		));
+	}
+
+	foreach my $txt ( @text )
+	{
+		next if( !defined($txt) || !length($txt) );
+		$irc_server->command( sprintf( "msg %s %s", $channel, $txt ));
+	}
+}
+
+sub msg_list
+{
+	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
+
+	my( @known, @unknown, @closed, @single );
 
 	foreach my $key ( sort{ $config->{server}{$a}{name} cmp $config->{server}{$b}{name} } keys %{ $config->{server} } )
 	{
@@ -367,7 +626,11 @@ sub msg_list # !fonline list
 		{
 			push( @closed, "\x02" . $config->{server}{$key}{name} . "\x02" );
 		}
-		elsif( $status->{server}{$key}{checked} > 0 )
+		elsif( $config->{server}{$key}{singleplayer} )
+		{
+			push( @single, "\x02" . $config->{server}{$key}{name} . "\x02" );
+		}
+		elsif( ($status->{server}{$key}{checked} || -1) > 0 )
 		{
 			my $text = sprintf( "\x02%s\x02 :: Address: \x02%s\x02 Port: \x02%d\x02",
 				$config->{server}{$key}{name},
@@ -402,24 +665,28 @@ sub msg_list # !fonline list
 
 	if( scalar(@unknown) > 0 )
 	{
-		my $text = join( ', ', @unknown );
 		$server->command( "msg $channel Servers without known address (planned, closed beta, etc.):" );
-		$server->command( sprintf( "msg %s  %s", $channel, $text ));
+		$server->command( sprintf( "msg %s  %s", $channel, join( ', ', @unknown )));
 	}
+
 
 	if( scalar(@closed) > 0 )
 	{
-		my $text = join( ', ', @closed );
 		$server->command( "msg $channel Closed servers:" );
-		$server->command( sprintf( "msg %s  %s", $channel, $text ));
+		$server->command( sprintf( "msg %s  %s", $channel, join( ', ', @closed )));
 	}
 
-	my $total = scalar(@known)+scalar(@unknown)+scalar(@closed);
-	$server->command( sprintf( "msg %s Total: %d server%s",
-		$channel, $total, $total != 1 ? "s" : "" ));
+	if( scalar(@single) > 0 )
+	{
+		$server->command( "msg $channel Singleplayer games:" );
+		$server->command( sprintf( "msg %s  %s", $channel, join( ', ', @single )));
+	}
+
+	my $total = scalar(@known)+scalar(@unknown)+scalar(@closed)+scalar(@single);
+	$server->command( sprintf( "msg %s Total: %d", $channel, $total ));
 }
 
-sub msg_help # !fonline help
+sub msg_help
 {
 	my( $server, $channel, $nick, $json, $override, @arguments ) = @_;
 
@@ -429,9 +696,11 @@ sub msg_help # !fonline help
 }
 
 #Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_override_cooldown', 0 );
-Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_config_json', 'http://fodev.net/status/data/config.json' );
-Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_status_json', 'http://fodev.net/status/data/status.json' );
+Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_data', 'http://fodev.net/status/data' );
+Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_config_json', 'config.json' );
 fonline_cooldown( 'status', 30 );
+fonline_cooldown( 'server', 30 );
+fonline_cooldown( 'info',   60 );
 fonline_cooldown( 'list',   60*15 );
 fonline_cooldown( 'help',   60 );
 

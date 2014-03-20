@@ -427,7 +427,8 @@ sub smf_get($)
 		$xml = eval { XMLin( $response->content ); };
 		if( $@ )
 		{
-			$error = sprintf( "XML ERROR : \x02%s\x02", $@ );
+			my $message = $@;
+			$error = sprintf( "XML ERROR : \x02%s\x02", $message );
 		}
 	}
 
