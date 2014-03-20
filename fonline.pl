@@ -133,6 +133,8 @@ my %channels = (
 my %status_channels = (
 	'forestnet' => {
 		'#2238'			=> 'fo2238',
+		'#ashesofphoenix'	=> 'phoenix',
+		'#fo2'			=> 'fonline2'
 	}
 );
 
@@ -323,8 +325,9 @@ sub say_check
 	if( $msg =~ /^[\t\ ]*\!s[\t\ ]*$/ || $msg =~ /^[\t\ ]*\!status[\t\ ]*$/ )
 	{
 		my $net = lc($server->{chatnet});
-		if( exists($status_channels{$net}{$channel}) )
-			{ $msg = '!fonline server '.$status_channels{$net}{$channel}; }
+		my $chan = lc($channel);
+		if( exists($status_channels{$net}{$chan}) )
+			{ $msg = '!fonline server '.$status_channels{$net}{$chan}; }
 	}
 
 	if( $msg =~ /^[\t\ ]*\!fonline[\t\ ]*([A-Za-z]*)[\t\ ]*([A-Za-z0-9_\t\ ]*)$/ )
@@ -470,25 +473,35 @@ sub msg_server
 	my $key = $arguments[0];
 	return if( !exists($config->{server}{$key}) );
 
-	sub extract_seconds($$)
-	{
-		my( $seconds, $need ) = ( @_ );
-		if( $seconds >= $need )
-		{
-			my $res = floor( $seconds / $need );
-			$_[0] -= $res * $need;
-		}
-	}
+	my $average = get_json_by_id( $config, 'average_short' );
+	$average = $average->{server}{$key} if( defined($average) );
+
+	my $lifetime = get_json_by_id( $config, 'lifetime' );
+	$lifetime = $lifetime->{server}{$key} if( defined($lifetime) );
 
 	my $text = 'Server is ';
 	if( exists($status->{server}{$key}) && $status->{server}{$key}{uptime} >= 0 )
 	{
-		$text .= sprintf( "\x02online\x02. Players: \x02%d\x02",
+		$text .= sprintf( "\x02online\x02, players: \x02%d\x02",
 			$status->{server}{$key}{players} );
+
+		# TODO?
+
+		$text .= sprintf( " \x02[\x02%s:%s\x02]\x02",
+			$config->{server}{$key}{host},
+			$config->{server}{$key}{port} );
 	}
 	elsif( exists($config->{server}{$key}{closed}) && $config->{server}{$key}{closed} )
 	{
 		$text .= "\x02closed\x02";
+
+		if( defined($lifetime) )
+		{
+			my $now = strftime( "%d %B %Y", localtime(time) );
+			my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+			$text .= sprintf( " since %s", $seen )
+				if( $now ne $seen );
+		}
 	}
 	elsif( exists($config->{server}{$key}{singleplayer}) && $config->{server}{$key}{singleplayer} )
 	{
@@ -505,6 +518,14 @@ sub msg_server
 	else
 	{
 		$text .= "\x02offline\x02";
+
+		if( defined($lifetime) )
+		{
+			my $now = strftime( "%d %B %Y", localtime(time) );
+			my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+			$text .= sprintf( " since %s", $seen )
+				if( $now ne $seen );
+		}
 	}
 
 	$text = sprintf( "\x02%s\x02: %s", $nick, $text ) if( $nick ne "" );
