@@ -479,13 +479,62 @@ sub msg_server
 	my $lifetime = get_json_by_id( $config, 'lifetime' );
 	$lifetime = $lifetime->{server}{$key} if( defined($lifetime) );
 
+	sub sec2time($;$)
+	{
+		my( $seconds, $limit ) = @_;
+		my @text;
+		foreach my $extract (
+			[ 'year',	60 * 60 * 24 * 7 * 4 * 12 ],
+			[ 'month',	60 * 60 * 24 * 7 * 4 ],
+			[ 'week',	60 * 60 * 24 * 7 ],
+			[ 'day',	60 * 60 * 24 ],
+			[ 'hour',	60 * 60 ],
+			[ 'minute',	60 ],
+#			[ 'second',	1 ]
+		)
+		{
+			my $need = @{$extract}[1];
+			
+			if( $seconds >= $need )
+			{
+				my $result = floor( $seconds / $need );
+				$seconds -= $result * $need;
+				if( !$limit || scalar(@text) < $limit )
+				{
+					push( @text, sprintf( "%d %s%s",
+						$result, @{$extract}[0], $result > 1 ? 's' : '' ));
+				}
+			}
+		}
+		my $stext = undef;
+		if( scalar(@text) == 0 )
+			{ $stext = 'some seconds'; }
+		elsif( scalar(@text) > 1 )
+		{
+			my $last = pop( @text );
+			$stext = join( ', ', @text );
+			$stext .= sprintf( " and %s", $last );
+		}
+		else
+			{ $stext = $text[0] };
+
+		return( $stext );
+	}
+
 	my $text = 'Server is ';
 	if( exists($status->{server}{$key}) && $status->{server}{$key}{uptime} >= 0 )
 	{
-		$text .= sprintf( "\x02online\x02, players: \x02%d\x02",
-			$status->{server}{$key}{players} );
+		my $since;
+		if( $status->{server}{$key}{uptime} < 86400 )
+			{ $since = sec2time( $status->{server}{$key}{uptime}, 2 ); }
+		else
+		{
+			$since =  strftime( "%d %B %Y",
+				localtime( time() - $status->{server}{$key}{uptime} ));
+		}
 
-		# TODO?
+		$text .= sprintf( "\x02online\x02 since %s; players: \x02%d\x02",
+			$since, $status->{server}{$key}{players} );
 
 		$text .= sprintf( " \x02[\x02%s:%s\x02]\x02",
 			$config->{server}{$key}{host},
@@ -518,8 +567,13 @@ sub msg_server
 	else
 	{
 		$text .= "\x02offline\x02";
+		my $off = int(0);
+		if( defined($status->{server}{$key}{seen}) && $status->{server}{$key}{seen} > 0 )
+			{ $off = time() - $status->{server}{$key}{seen}; } # 24h
 
-		if( defined($lifetime) )
+		if( $off > 0 && $off < 86400 ) # 24h
+			{ $text .= sprintf( " since %s", sec2time( $off )); }
+		elsif( defined($lifetime) )
 		{
 			my $now = strftime( "%d %B %Y", localtime(time) );
 			my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
