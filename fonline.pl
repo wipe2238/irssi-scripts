@@ -761,9 +761,49 @@ sub msg_list
 	$server->command( sprintf( "msg %s Total: %d", $channel, $total ));
 }
 
+sub msg_records
+{
+	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
+
+	my $max_players = get_json_by_id( $config, 'max_players' );
+	return if( !$max_players || !exists($max_players->{server}) );
+
+	my( $total, $idx, $ignored, @messages ) = ( 0, 0, 0 );
+	foreach my $key ( sort{$max_players->{server}{$b}{players} <=> $max_players->{server}{$a}{players}} keys( $max_players->{server} ))
+	{
+		$total++;
+		my $players = $max_players->{server}{$key}{players};
+		if( $players < 150 )
+		{
+			$ignored++;
+			next;
+		}
+		push( @messages, sprintf( "\x02#%d\x02 : %d : %s (%s)",
+			++$idx, $players,
+			$config->{server}{$key}{name},
+			strftime( "%d %B %Y", localtime($max_players->{server}{$key}{timestamp}) )
+		));
+	}
+	if( scalar(@messages) > 0 )
+	{
+		$server->command( sprintf( "msg %s %sDisplaying %d%s server%s",
+			$channel,
+			$nick ne "" ? sprintf( "\x02%s\x02: ", $nick ) : '',
+			$total-$ignored,
+			$ignored > 0 ? sprintf( "/%d", $total ) : '',
+			$total-$ignored != 1 ? 's' : ''
+		));
+
+		foreach my $msg ( @messages )
+		{
+			$server->command( sprintf( "msg %s %s", $channel, $msg ));
+		}
+	}
+}
+
 sub msg_help
 {
-	my( $server, $channel, $nick, $json, $override, @arguments ) = @_;
+	my( $server, $channel, $nick, $config, $status, $override, @arguments ) = @_;
 
 	return if( $nick eq "" );
 
@@ -773,11 +813,12 @@ sub msg_help
 #Irssi::settings_add_bool( $IRSSI{name}, $IRSSI{name} . '_override_cooldown', 0 );
 Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_data', 'http://fodev.net/status/data' );
 Irssi::settings_add_str( $IRSSI{name}, $IRSSI{name} . '_config_json', 'config.json' );
-fonline_cooldown( 'status', 30 );
-fonline_cooldown( 'server', 30 );
-fonline_cooldown( 'info',   60 );
-fonline_cooldown( 'list',   60*15 );
-fonline_cooldown( 'help',   60 );
+fonline_cooldown( 'status',  30 );
+fonline_cooldown( 'server',  30 );
+fonline_cooldown( 'info',    60 );
+fonline_cooldown( 'list',    60*15 );
+fonline_cooldown( 'records', 60 );
+fonline_cooldown( 'help',    60 );
 
 Irssi::signal_add( 'message own_public', 'say_own' );
 Irssi::signal_add( 'message public',     'say_other' );
