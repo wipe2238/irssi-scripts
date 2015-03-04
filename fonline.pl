@@ -49,6 +49,9 @@ $VERSION = '0.3.1';
 # fonline_cooldown_list (defualt: 900)
 #	Cooldown for [!fonline list], in seconds
 #
+# fonline_cooldown_records (default: 120)
+#	Cooldown for [!fonline records], in seconds
+#
 # fonline_cooldown_help (default: 60)
 #	Cooldown for [!fonline help], in seconds
 #
@@ -71,6 +74,9 @@ $VERSION = '0.3.1';
 #	Short status of single server
 #	!s and !status shortcuts works only on channels defined in %status_channels
 #
+#
+# !fonline record [server_id]
+#
 # !fonline info <server_id>
 #	Basic informations about given server
 #
@@ -79,9 +85,13 @@ $VERSION = '0.3.1';
 #
 ###
 #
+# v0.3.2
+#
+#	added [!fonline record]
+#
 # v0.3.1
 #
-#	more integration with fodev-status
+#	better integration with fodev-status
 #	added [!fonline info]
 #	added [!fonline server]
 #	added fonline_data setting
@@ -121,12 +131,13 @@ my $sub_prefix = 'msg';
 my %channels = (
 	'forestnet' => {
 		# official channels
+		'#2238'			=> [ 'fo2238' ],
 		'#ashesofphoenix'	=> [ 'phoenix' ],
 		'#fo2'			=> [ 'fonline2' ],
 		'#fode'			=> [ 'fode' ],
 		'#reloaded'		=> [ 'reloaded' ],
 		# script home channel
-		'#sq'			=> [ 'fonline2', 'reloaded' ]
+		'#sq'			=> [ 'fonline2', 'phoenix', 'reloaded' ]
 	}
 );
 
@@ -134,7 +145,9 @@ my %status_channels = (
 	'forestnet' => {
 		'#2238'			=> 'fo2238',
 		'#ashesofphoenix'	=> 'phoenix',
-		'#fo2'			=> 'fonline2'
+		'#fo2'			=> 'fonline2',
+		'#loading'		=> 'reloaded',
+		'#sq'			=> 'fonline2'
 	}
 );
 
@@ -304,6 +317,19 @@ sub get_config_status_json()
 	return( $config, $status );
 }
 
+sub fools_day
+{
+	return( 1 ) if( (localtime(time))[3] == 1 && (localtime(time))[4] == 3 );
+	return( 0 );
+}
+
+sub random
+{
+    my( $min, $max ) = @_;
+
+    return( int( rand( $max - $min + 1 )) + $min );
+}
+
 sub say_own
 {
 	my( $server, $msg, $channel ) = @_;
@@ -425,6 +451,14 @@ sub msg_status
 			{
 				if( $all || $status->{server}{$key}{players} > 0 )
 				{
+					if( fools_day() )
+					{
+						my $fool = random( int($status->{server}{$key}{players} / 2), $status->{server}{$key}{players} * 4 );
+
+						$status->{server}{$key}{players} += $fool;
+						$status->{players} += $fool;
+					}
+
 					$text .= sprintf( "%s%s%s: %d (%.1f%%)%s",
 						$first ? "" : ", ",
 						$bold ? "\x02" : "",
@@ -451,10 +485,6 @@ sub msg_status
 			$text
 		);
 
-		if( $nick ne "" )
-		{
-			fonline_log( "Request by %s at %s", $nick, $channel );
-		}
 		$server->command( sprintf( "msg %s %s", $channel, $text ));
 	}
 	else
@@ -508,7 +538,7 @@ sub msg_server
 		}
 		my $stext = undef;
 		if( scalar(@text) == 0 )
-			{ $stext = 'some seconds'; }
+			{ $stext = 'some time'; }
 		elsif( scalar(@text) > 1 )
 		{
 			my $last = pop( @text );
@@ -525,11 +555,20 @@ sub msg_server
 	if( exists($status->{server}{$key}) && $status->{server}{$key}{uptime} >= 0 )
 	{
 		my $since;
+
+		if( fools_day() )
+		{
+			if( $status->{server}{$key}{uptime} > 0 )
+				{ $status->{server}{$key}{uptime} += random( $status->{server}{$key}{uptime} * 5, 255255255 ); }
+
+			$status->{server}{$key}{players} += random( int($status->{server}{$key}{players} / 2), $status->{server}{$key}{players} * 4 );
+		}
+
 		if( $status->{server}{$key}{uptime} < 86400 )
 			{ $since = sec2time( $status->{server}{$key}{uptime}, 2 ); }
 		else
 		{
-			$since =  strftime( "%d %B %Y",
+			$since =  strftime( "%-d %B %Y",
 				localtime( time() - $status->{server}{$key}{uptime} ));
 		}
 
@@ -546,8 +585,8 @@ sub msg_server
 
 		if( defined($lifetime) )
 		{
-			my $now = strftime( "%d %B %Y", localtime(time) );
-			my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+			my $now = strftime( "%-d %B %Y", localtime(time) );
+			my $seen = strftime( "%-d %B %Y", localtime($lifetime->{seen} ));
 			$text .= sprintf( " since %s", $seen )
 				if( $now ne $seen );
 		}
@@ -575,8 +614,8 @@ sub msg_server
 			{ $text .= sprintf( " since %s", sec2time( $off )); }
 		elsif( defined($lifetime) )
 		{
-			my $now = strftime( "%d %B %Y", localtime(time) );
-			my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+			my $now = strftime( "%-d %B %Y", localtime(time) );
+			my $seen = strftime( "%-d %B %Y", localtime($lifetime->{seen} ));
 			$text .= sprintf( " since %s", $seen )
 				if( $now ne $seen );
 		}
@@ -607,12 +646,12 @@ sub msg_info
 	elsif( !$singleplayer && defined($lifetime) )
 	{
 		my $tracked = sprintf( "%s",
-			strftime( "%d %B %Y", localtime($lifetime->{introduced}) ));
+			strftime( "%-d %B %Y", localtime($lifetime->{introduced}) ));
 
 		if( $closed )
 		{
 			$tracked .= sprintf( " to %s",
-				strftime( "%d %B %Y", localtime($lifetime->{seen}) ));
+				strftime( "%-d %B %Y", localtime($lifetime->{seen}) ));
 		}
 
 		push( @text, sprintf( "\x02%s\x02 (tracked since %s)", $server->{name}, $tracked ));
@@ -638,8 +677,8 @@ sub msg_info
 			$txt .= 'Offline';
 			if( exists($lifetime->{seen}) )
 			{
-				my $now = strftime( "%d %B %Y", localtime(time) );
-				my $seen = strftime( "%d %B %Y", localtime($lifetime->{seen} ));
+				my $now = strftime( "%-d %B %Y", localtime(time) );
+				my $seen = strftime( "%-d %B %Y", localtime($lifetime->{seen} ));
 				$txt .= sprintf( " since %s", $seen )
 					if( $now ne $seen );
 			}
@@ -781,7 +820,7 @@ sub msg_records
 		push( @messages, sprintf( "\x02#%d\x02 : %d : %s (%s)",
 			++$idx, $players,
 			$config->{server}{$key}{name},
-			strftime( "%d %B %Y", localtime($max_players->{server}{$key}{timestamp}) )
+			strftime( "%-d %B %Y", localtime($max_players->{server}{$key}{timestamp}) )
 		));
 	}
 	if( scalar(@messages) > 0 )
@@ -817,7 +856,7 @@ fonline_cooldown( 'status',  30 );
 fonline_cooldown( 'server',  30 );
 fonline_cooldown( 'info',    60 );
 fonline_cooldown( 'list',    60*15 );
-fonline_cooldown( 'records', 60 );
+fonline_cooldown( 'records', 120 );
 fonline_cooldown( 'help',    60 );
 
 Irssi::signal_add( 'message own_public', 'say_own' );
