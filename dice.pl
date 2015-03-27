@@ -24,7 +24,6 @@ sub dice
 {
 	my( $server, $msg, $channel, $nick ) = @_;
 
-	# support !s and !status by editing incoming message
 	if( $msg =~ /^[\t\ ]*\!([0-9]*)[kd]([0-9]+)*[\t\ ]*$/ )
 	{
 		my( $count, $num ) = ( $1, int($2) );
