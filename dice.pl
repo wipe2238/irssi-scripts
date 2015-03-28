@@ -30,7 +30,7 @@ sub dice
 		$count = 1 if( $count eq "");
 		$count = int($count);
 
-		return if( $count <= 0 || $num <= 1 );
+		return if( $count <= 0 || $num <= 1 || $count > 9999 || $num > 9999 );
 
 		my( $min, $max, $result ) = ( 0, 0, 0 );
 		for( my $l = 0; $l < $count; $l++ )
