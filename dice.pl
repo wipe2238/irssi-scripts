@@ -24,28 +24,60 @@ sub dice
 {
 	my( $server, $msg, $channel, $nick ) = @_;
 
-	if( $msg =~ /^[\t\ ]*\!([0-9]*)[kd]([0-9]+)*[\t\ ]*$/ )
+	if( $msg =~ /^[\t\ ]*\!([0-9]*)[kd]([0-9]+)[\t\ ]*([\*\/\+\-]?)[\t\ ]*([0-9]*)[\t\ ]*$/ )
 	{
-		my( $count, $num ) = ( $1, int($2) );
-		$count = 1 if( $count eq "");
-		$count = int($count);
+		my( $min, $num, $op, $opnum ) = ( $1, int($2), $3, $4 );
 
-		return if( $count <= 0 || $num <= 1 || $count > 9999 || $num > 9999 );
+		$min = 1 if( $min eq "");
+		$min = int($min);
 
-		my( $min, $max, $result ) = ( 0, 0, 0 );
-		for( my $l = 0; $l < $count; $l++ )
+		$opnum = 0 if( $opnum eq "" );
+		$opnum = int($opnum);
+
+		return if( $min < 1 || $num < 2 );
+
+		my( $max, $result ) = ( $min * $num, random( $min, $min * $num ));
+		
+		my $extra = "";
+
+		if( $op ne "" && $opnum > 0 )
 		{
-			$min++;
-			$max += $num;
-			$result += random( 1, $num );
+			my $round = "";
+			$extra .= sprintf( " \x02(\x02%s%u%s%s%u",
+				$result == $min || $result == $max ? "\x0304" : "",
+				$result,
+				$result == $min || $result == $max ? "\x03" : "",
+				$op,
+				$opnum
+			);
+
+			$result = $result * $opnum if( $op eq "*" );
+			$result = $result / $opnum if( $op eq "/" );
+			$result = $result + $opnum if( $op eq "+" );
+			$result = $result - $opnum if( $op eq "-" );
+
+			if( $result < $min )
+			{
+				$result = $min;
+				$round = "minimal";
+			}
+			elsif( $result > $max )
+			{
+				$result = $max;
+				$round = "maximal";
+			}
+
+			$extra .= sprintf( ", rounded to %s value", $round ) if( $round ne "" );
+			$extra .= "\x02)\x02";
 		}
 
-		$server->command( sprintf( "msg %s %s%s%d%s",
+		$server->command( sprintf( "msg %s %s%s%u%s%s",
 			$channel,
 			$nick ne "" ? sprintf( "\x02%s\x02: ", $nick ) : "",
 			$result == $min || $result == $max ? "\x0304" : "",
 			$result,
-			$result == $min || $result == $max ? "\x03" : ""
+			$result == $min || $result == $max ? "\x03" : "",
+			$extra
 		));
 	}
 }
