@@ -17,7 +17,7 @@ sub random
 {
     my( $min, $max ) = @_;
 
-    return( int( rand( $max - $min + 1 )) + $min );
+    return( rand( $max - $min + 1 ) + $min );
 }
 
 sub dice
@@ -43,7 +43,7 @@ sub dice
 		if( $op ne "" && $opnum > 0 )
 		{
 			my $round = "";
-			$extra .= sprintf( " \x02(\x02%s%u%s%s%u",
+			$extra .= sprintf( " \x02(\x02%s%.0f%s%s%u",
 				$result == $min || $result == $max ? "\x0304" : "",
 				$result,
 				$result == $min || $result == $max ? "\x03" : "",
@@ -71,7 +71,7 @@ sub dice
 			$extra .= "\x02)\x02";
 		}
 
-		$server->command( sprintf( "msg %s %s%s%u%s%s",
+		$server->command( sprintf( "msg %s %s%s%.0f%s%s",
 			$channel,
 			$nick ne "" ? sprintf( "\x02%s\x02: ", $nick ) : "",
 			$result == $min || $result == $max ? "\x0304" : "",
