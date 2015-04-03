@@ -17,7 +17,7 @@ sub random
 {
     my( $min, $max ) = @_;
 
-    return( rand( $max - $min + 1 ) + $min );
+    return( int( rand( $max - $min + 1 ) + $min ));
 }
 
 sub dice
@@ -37,16 +37,25 @@ sub dice
 		return if( $min < 1 || $num < 2 );
 
 		my( $max, $result ) = ( $min * $num, random( $min, $min * $num ));
-		
+
+		my( $red_on, $red_off ) = ( "\x0304", "\x03" );
+
+		my $chan = $server->channel_find( $channel );
+		if( defined($chan) )
+		{
+			( $red_on,$red_off ) = ( "\x02", "\x02" )
+				if( $chan->{mode} =~ /c/ );
+		}
+
 		my $extra = "";
 
 		if( $op ne "" && $opnum > 0 )
 		{
 			my $round = "";
 			$extra .= sprintf( " \x02(\x02%s%.0f%s%s%u",
-				$result == $min || $result == $max ? "\x0304" : "",
+				$result == $min || $result == $max ? $red_on : "",
 				$result,
-				$result == $min || $result == $max ? "\x03" : "",
+				$result == $min || $result == $max ? $red_off : "",
 				$op,
 				$opnum
 			);
@@ -74,9 +83,9 @@ sub dice
 		$server->command( sprintf( "msg %s %s%s%.0f%s%s",
 			$channel,
 			$nick ne "" ? sprintf( "\x02%s\x02: ", $nick ) : "",
-			$result == $min || $result == $max ? "\x0304" : "",
+			$result == $min || $result == $max ? $red_on : "",
 			$result,
-			$result == $min || $result == $max ? "\x03" : "",
+			$result == $min || $result == $max ? $red_off : "",
 			$extra
 		));
 	}
